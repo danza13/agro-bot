@@ -370,7 +370,7 @@ def update_google_sheet(data: dict) -> int:
 
     # Заповнюємо необхідні клітинки
     ws.update_cell(new_row, 1, request_number)
-    current_date = datetime.datetime.now().strftime("%d.%m")
+    current_date = datetime.now().strftime("%d.%m")
     ws.update_cell(new_row, 2, current_date)
 
     fullname = data.get("fullname", "")
