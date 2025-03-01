@@ -21,7 +21,7 @@ from aiohttp import web
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_formatting import format_cell_range, cellFormat, Color
-from gspread.utils import a1_to_rowcol
+from gspread.utils import rowcol_to_a1
 
 ############################################
 # 1) ЧИТАЄМО ЗМІННІ ОТОЧЕННЯ ЗАМІСТЬ .env ТА credentials.json
@@ -399,7 +399,7 @@ def update_google_sheet(data: dict) -> int:
 
 def color_price_cell_in_table2(row: int, fmt: cellFormat, col: int = 12):
     ws2 = get_worksheet2()
-    cell_range = f"{a1_to_rowcol(row, col)}:{a1_to_rowcol(row, col)}"
+    cell_range = f"{rowcol_to_a1(row, col)}:{rowcol_to_a1(row, col)}"
     # Іноді можуть бути потрібні import'и: from gspread.utils import rowcol_to_a1
     # Для акуратності:
     cell_range = f"{gspread.utils.rowcol_to_a1(row, col)}:{gspread.utils.rowcol_to_a1(row, col)}"
