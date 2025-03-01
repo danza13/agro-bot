@@ -835,9 +835,9 @@ async def admin_view_confirmed_list_choice(message: types.Message, state: FSMCon
         f"Група: <b>{app_data.get('group', '')}</b>",
         f"Культура: <b>{app_data.get('culture', '')}</b>",
         f"Кількість: <b>{app_data.get('quantity', '')} т</b>",
-        f"Бажана ціна: <b>{app_data.get('price', '')}</b>",
-        f"Валюта: <b>{app_data.get('currency', '')}</b>",
         f"Форма оплати: <b>{app_data.get('payment_form', '')}</b>",
+        f"Валюта: <b>{app_data.get('currency', '')}</b>",
+        f"Бажана ціна: <b>{app_data.get('price', '')}</b>",
         f"Пропозиція ціни: <b>{app_data.get('proposal', '')}</b>",
     ]
 
