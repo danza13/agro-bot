@@ -980,7 +980,7 @@ async def show_user_applications(message: types.Message):
 # ДЕТАЛЬНИЙ ПЕРЕГЛЯД ЗАЯВКИ
 ############################################
 
-@dp.message_handler(Regexp(r"^(\d+)\.\s(.+)\s\|\s(.+)\sт$"), state="*")
+@dp.message_handler(Regexp(r"^(\d+)\.\s(.+)\s\|\s(.+)\sт(?:\s✅)?$"), state="*")
 async def view_application_detail(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     uid = str(user_id)
