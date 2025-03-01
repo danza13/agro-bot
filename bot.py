@@ -711,27 +711,30 @@ async def admin_select_application(message: types.Message, state: FSMContext):
             uid = k
             break
 
+    # Якщо uid не знайдено, повідомляємо та виходимо з функції
     if not uid:
-        await message.answer("Заявку не знайдено. Спробуйте ще раз або 'Назад'.", reply_markup=remove_keyboard())
+        await message.answer("Заявку не знайдено. Спробуйте ще раз або натисніть 'Назад'.", 
+                             reply_markup=remove_keyboard())
         return
 
-        info = pending[uid]
-        timestamp_str = info.get("timestamp", "")
-        if timestamp_str:
-            # Конвертуємо ISO-рядок у datetime та встановлюємо київський часовий пояс
-            dt = datetime.fromisoformat(timestamp_str)
-            dt_kyiv = dt.astimezone(ZoneInfo("Europe/Kiev"))
-            formatted_timestamp = dt_kyiv.strftime("%d.%m.%Y | %H:%M:%S")
-        else:
-            formatted_timestamp = "Невідомо"
+    # Якщо знайдено, формуємо деталі заявки
+    info = pending[uid]
+    timestamp_str = info.get("timestamp", "")
+    if timestamp_str:
+        dt = datetime.fromisoformat(timestamp_str)
+        dt_kyiv = dt.astimezone(ZoneInfo("Europe/Kiev"))
+        formatted_timestamp = dt_kyiv.strftime("%d.%m.%Y | %H:%M:%S")
+    else:
+        formatted_timestamp = "Невідомо"
 
-        text = (
-            f"Користувач на модерацію:\n"
-            f"User ID: {uid}\n"
-            f"ПІБ: {info.get('fullname', 'Невідомо')}\n"
-            f"Номер: {info.get('phone', '')}\n"
-            f"Дата та час: {formatted_timestamp}"
-        )
+    text = (
+        f"Користувач на модерацію:\n"
+        f"User ID: {uid}\n"
+        f"ПІБ: {info.get('fullname', 'Невідомо')}\n"
+        f"Номер: {info.get('phone', '')}\n"
+        f"Дата та час: {formatted_timestamp}"
+    )
+
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("Дозволити", "Заблокувати")
     kb.add("Назад")
