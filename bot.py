@@ -1328,59 +1328,64 @@ async def poll_manager_proposals():
             rows = ws.get_all_values()
             apps = load_applications()
             for i, row in enumerate(rows[1:], start=2):
+                # Перевіряємо, чи є в рядку достатньо клітинок (маємо принаймні 15)
                 if len(row) < 15:
                     continue
+
+                # Отримуємо значення ціни менеджера з 15-ої клітинки (стовпець O) та видаляємо пробіли
                 current_manager_price_str = row[14].strip()
+                # Якщо значення порожнє, пропускаємо цей рядок
                 if not current_manager_price_str:
                     continue
+
                 try:
                     cur_price = float(current_manager_price_str)
                 except ValueError:
                     continue
 
-            for uid, app_list in apps.items():
-                for idx, app in enumerate(app_list, start=1):
-                    if app.get("sheet_row") == i:
-                        status = app.get("proposal_status", "active")
-                        original_manager_price_str = app.get("original_manager_price", "").strip()
-                        try:
-                            orig_price = float(original_manager_price_str) if original_manager_price_str else None
-                        except:
-                            orig_price = None
+                for uid, app_list in apps.items():
+                    for idx, app in enumerate(app_list, start=1):
+                        # Якщо позиція заявки (sheet_row) відповідає поточному рядку
+                        if app.get("sheet_row") == i:
+                            status = app.get("proposal_status", "active")
+                            original_manager_price_str = app.get("original_manager_price", "").strip()
+                            try:
+                                orig_price = float(original_manager_price_str) if original_manager_price_str else None
+                            except Exception:
+                                orig_price = None
 
-                        if orig_price is None:
-                            # Використовуємо idx як порядковий номер заявки для користувача
-                            culture = app.get("culture", "Невідомо")
-                            quantity = app.get("quantity", "Невідомо")
-                            app["original_manager_price"] = current_manager_price_str
-                            app["proposal"] = current_manager_price_str
-                            app["proposal_status"] = "Agreed"
-                            await bot.send_message(
-                                app.get("chat_id"),
-                                f"Нова пропозиція по Вашій заявці ({idx}. Культура: {culture} | {quantity} т). Ціна: {current_manager_price_str}"
-                            )
-                            logging.info(f"Для заявки користувача {uid} встановлено першу manager_price: {current_manager_price_str}")
-                        else:
-                            previous_proposal = app.get("proposal")
-                            if previous_proposal != current_manager_price_str:
-                                app["original_manager_price"] = previous_proposal
+                            if orig_price is None:
+                                # Використовуємо idx як порядковий номер заявки
+                                culture = app.get("culture", "Невідомо")
+                                quantity = app.get("quantity", "Невідомо")
+                                app["original_manager_price"] = current_manager_price_str
                                 app["proposal"] = current_manager_price_str
                                 app["proposal_status"] = "Agreed"
+                                await bot.send_message(
+                                    app.get("chat_id"),
+                                    f"Нова пропозиція по Вашій заявці ({idx}. Культура: {culture} | {quantity} т). Ціна: {current_manager_price_str}"
+                                )
+                                logging.info(f"Для заявки користувача {uid} встановлено першу manager_price: {current_manager_price_str}")
+                            else:
+                                previous_proposal = app.get("proposal")
+                                if previous_proposal != current_manager_price_str:
+                                    app["original_manager_price"] = previous_proposal
+                                    app["proposal"] = current_manager_price_str
+                                    app["proposal_status"] = "Agreed"
 
-                                if status == "waiting":
-                                    culture = app.get("culture", "Невідомо")
-                                    quantity = app.get("quantity", "Невідомо")
-                                    await bot.send_message(
-                                        app.get("chat_id"),
-                                        f"Ціна по заявці {culture} | {quantity} т змінилась з {previous_proposal} на {current_manager_price_str}"
-                                    )
-                                else:
-                                    await bot.send_message(
-                                        app.get("chat_id"),
-                                        f"Для Вашої заявки оновлено пропозицію: {current_manager_price_str}"
-                                    )
-                                logging.info(f"Ціна змінилася з {previous_proposal} на {current_manager_price_str} (user_id={uid})")
-
+                                    if status == "waiting":
+                                        culture = app.get("culture", "Невідомо")
+                                        quantity = app.get("quantity", "Невідомо")
+                                        await bot.send_message(
+                                            app.get("chat_id"),
+                                            f"Ціна по заявці {culture} | {quantity} т змінилась з {previous_proposal} на {current_manager_price_str}"
+                                        )
+                                    else:
+                                        await bot.send_message(
+                                            app.get("chat_id"),
+                                            f"Для Вашої заявки оновлено пропозицію: {current_manager_price_str}"
+                                        )
+                                    logging.info(f"Ціна змінилася з {previous_proposal} на {current_manager_price_str} (user_id={uid})")
             save_applications(apps)
         except Exception as e:
             logging.exception(f"Помилка у фоні: {e}")
