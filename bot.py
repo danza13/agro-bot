@@ -987,7 +987,7 @@ async def view_application_detail(message: types.Message, state: FSMContext):
     apps = load_applications()
     user_apps = apps.get(uid, [])
 
-    match = re.match(r"^(\d+)\.\s(.+)\s\|\s(.+)\sт$", message.text.strip())
+    match = re.match(r"^(\d+)\.\s(.+)\s\|\s(.+)\sт(?:\s✅)?$", message.text.strip())
     if not match:
         await message.answer("Невірна заявка.", reply_markup=remove_keyboard())
         return
