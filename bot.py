@@ -242,7 +242,7 @@ def save_applications(apps):
 
 def add_application(user_id, chat_id, application_data):
     """Додає заявку для користувача в applications_by_user.json."""
-    application_data['timestamp'] = datetime.datetime.now().isoformat()
+    application_data['timestamp'] = datetime.now().isoformat()
     application_data['user_id'] = user_id
     application_data['chat_id'] = chat_id
     application_data["proposal_status"] = "active"
@@ -654,7 +654,7 @@ async def complete_registration(message: types.Message, state: FSMContext):
     users.setdefault("pending_users", {})[uid] = {
         "fullname": fullname,
         "phone": phone,
-        "timestamp": datetime.datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat()
     }
     save_users(users)
 
@@ -841,7 +841,7 @@ async def admin_view_confirmed_list_choice(message: types.Message, state: FSMCon
     app_data = selected_entry["app_data"]
     timestamp = app_data.get("timestamp", "")
     try:
-        dt = datetime.datetime.fromisoformat(timestamp)
+        dt = datetime.fromisoformat(timestamp)
         formatted_date = dt.strftime("%d.%m.%Y")
     except Exception:
         formatted_date = timestamp
@@ -1010,7 +1010,7 @@ async def view_application_detail(message: types.Message, state: FSMContext):
     app = user_apps[idx]
     timestamp = app.get("timestamp", "")
     try:
-        dt = datetime.datetime.fromisoformat(timestamp)
+        dt = datetime.fromisoformat(timestamp)
         formatted_date = dt.strftime("%d.%m.%Y")
     except Exception:
         formatted_date = timestamp
@@ -1177,7 +1177,7 @@ async def confirm_proposal(message: types.Message, state: FSMContext):
 
     timestamp = app.get("timestamp", "")
     try:
-        dt = datetime.datetime.fromisoformat(timestamp)
+        dt = datetime.fromisoformat(timestamp)
         formatted_date = dt.strftime("%d.%m.%Y")
     except Exception:
         formatted_date = timestamp or "—"
