@@ -8,6 +8,8 @@ import asyncio
 import datetime
 import re
 from urllib.parse import quote
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -491,9 +493,9 @@ async def process_webapp_data_direct(user_id: int, data: dict, edit_index: int =
 
     message_lines.extend([
         f"Кількість: {data.get('quantity', '')} т",
-        f"Ціна: {data.get('price', '')}",
+        f"Форма оплати: {data.get('payment_form', '')}",
         f"Валюта: {data.get('currency', '')}",
-        f"Форма оплати: {data.get('payment_form', '')}"
+        f"Ціна: {data.get('price', '')}"
     ])
 
     preview_text = "\n".join(message_lines)
@@ -713,14 +715,23 @@ async def admin_select_application(message: types.Message, state: FSMContext):
         await message.answer("Заявку не знайдено. Спробуйте ще раз або 'Назад'.", reply_markup=remove_keyboard())
         return
 
-    info = pending[uid]
-    text = (
-        f"Користувач на модерацію:\n"
-        f"User ID: {uid}\n"
-        f"ПІБ: {info.get('fullname', 'Невідомо')}\n"
-        f"Номер: {info.get('phone', '')}\n"
-        f"Дата: {info.get('timestamp', '')}"
-    )
+        info = pending[uid]
+        timestamp_str = info.get("timestamp", "")
+        if timestamp_str:
+            # Конвертуємо ISO-рядок у datetime та встановлюємо київський часовий пояс
+            dt = datetime.fromisoformat(timestamp_str)
+            dt_kyiv = dt.astimezone(ZoneInfo("Europe/Kiev"))
+            formatted_timestamp = dt_kyiv.strftime("%d.%m.%Y | %H:%M:%S")
+        else:
+            formatted_timestamp = "Невідомо"
+
+        text = (
+            f"Користувач на модерацію:\n"
+            f"User ID: {uid}\n"
+            f"ПІБ: {info.get('fullname', 'Невідомо')}\n"
+            f"Номер: {info.get('phone', '')}\n"
+            f"Дата та час: {formatted_timestamp}"
+        )
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("Дозволити", "Заблокувати")
     kb.add("Назад")
@@ -941,7 +952,7 @@ async def start_application(message: types.Message, state: FSMContext):
     await state.finish()
     webapp_url = "https://danza13.github.io/agro-webapp/webapp.html"
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(types.KeyboardButton("Відкрити WebApp для заповнення", web_app=types.WebAppInfo(url=webapp_url)))
+    kb.add(types.KeyboardButton("Відкрити форму для заповнення", web_app=types.WebAppInfo(url=webapp_url)))
     kb.row("Скасувати")
     await message.answer("Заповніть дані заявки у WebApp:", reply_markup=kb)
     await ApplicationStates.waiting_for_webapp_data.set()
@@ -1327,25 +1338,28 @@ async def poll_manager_proposals():
                 except ValueError:
                     continue
 
-                for uid, app_list in apps.items():
-                    for app in app_list:
-                        if app.get("sheet_row") == i:
-                            status = app.get("proposal_status", "active")
-                            original_manager_price_str = app.get("original_manager_price", "").strip()
-                            try:
-                                orig_price = float(original_manager_price_str) if original_manager_price_str else None
-                            except:
-                                orig_price = None
+            for uid, app_list in apps.items():
+                for idx, app in enumerate(app_list, start=1):
+                    if app.get("sheet_row") == i:
+                        status = app.get("proposal_status", "active")
+                        original_manager_price_str = app.get("original_manager_price", "").strip()
+                        try:
+                            orig_price = float(original_manager_price_str) if original_manager_price_str else None
+                        except:
+                            orig_price = None
 
-                            if orig_price is None:
-                                app["original_manager_price"] = current_manager_price_str
-                                app["proposal"] = current_manager_price_str
-                                app["proposal_status"] = "Agreed"
-                                await bot.send_message(
-                                    app.get("chat_id"),
-                                    f"Нова пропозиція по Вашій заявці (культура: {app.get('culture', 'Невідомо')}). Ціна: {current_manager_price_str}"
-                                )
-                                logging.info(f"Для заявки користувача {uid} встановлено першу manager_price: {current_manager_price_str}")
+                        if orig_price is None:
+                            # Використовуємо idx як порядковий номер заявки для користувача
+                            culture = app.get("culture", "Невідомо")
+                            quantity = app.get("quantity", "Невідомо")
+                            app["original_manager_price"] = current_manager_price_str
+                            app["proposal"] = current_manager_price_str
+                            app["proposal_status"] = "Agreed"
+                            await bot.send_message(
+                                app.get("chat_id"),
+                                f"Нова пропозиція по Вашій заявці ({idx}. Культура: {culture} | {quantity} т). Ціна: {current_manager_price_str}"
+                            )
+                            logging.info(f"Для заявки користувача {uid} встановлено першу manager_price: {current_manager_price_str}")
                             else:
                                 previous_proposal = app.get("proposal")
                                 if previous_proposal != current_manager_price_str:
