@@ -1392,7 +1392,7 @@ async def poll_manager_proposals():
                                 app["proposal_status"] = "Agreed"
                                 await bot.send_message(
                                     app.get("chat_id"),
-                                    f"Нова пропозиція по Вашій заявці ({idx}. Культура: {culture} | {quantity} т). Ціна: {current_manager_price_str}"
+                                    f"Нова пропозиція по Вашій заявці {idx}. {culture} | {quantity} т. Ціна: {current_manager_price_str}"
                                 )
                             else:
                                 previous_proposal = app.get("proposal")
@@ -1406,7 +1406,7 @@ async def poll_manager_proposals():
                                         quantity = app.get("quantity", "Невідомо")
                                         await bot.send_message(
                                             app.get("chat_id"),
-                                            f"Ціна по заявці {culture} | {quantity} т змінилась з {previous_proposal} на {current_manager_price_str}"
+                                            f"Ціна по заявці {idx}. {culture} | {quantity} т змінилась з {previous_proposal} на {current_manager_price_str}"
                                         )
                                     else:
                                         await bot.send_message(
