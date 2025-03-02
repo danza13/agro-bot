@@ -689,7 +689,7 @@ async def admin_moderation_section_handler(message: types.Message, state: FSMCon
                 row = []
         if row:
             kb.row(*row)
-        kb.add("Назад")
+        kb.add("Вивантажити базу", "Назад")
 
         await message.answer("Список схвалених користувачів (по два в рядку):", reply_markup=kb)
         await AdminReview.viewing_approved_list.set()
