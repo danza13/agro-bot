@@ -125,12 +125,15 @@ CONFIG = {
     CONFIG = config_module.CONFIG
 
 ############################################
-# 5) ФОРМАТИ ФОНУ (ЧЕРВОНИЙ, ЗЕЛЕНИЙ, ЖОВТИЙ)
+# 5) ФОРМАТИ ФОНУ (ЧЕРВОНИЙ, ЗЕЛЕНИЙ, ЖОВТИЙ) + ФОРМАТ ДЛЯ ВИДАЛЕНИХ ЗАЯВОК
 ############################################
 
 red_format = cellFormat(backgroundColor=Color(1, 0.8, 0.8))
 green_format = cellFormat(backgroundColor=Color(0.8, 1, 0.8))
 yellow_format = cellFormat(backgroundColor=Color(1, 1, 0.8))
+
+# Новий колір для видалених заявок (#de0000 => RGB(222,0,0) => Color(0.87, 0.0, 0.0))
+deleted_format = cellFormat(backgroundColor=Color(0.87, 0.0, 0.0))
 
 ############################################
 # 6) ДОДАТКОВІ ПОЛЯ У FRIENDLY-ФОРМАТ
@@ -271,42 +274,75 @@ def update_application_status(user_id, app_index, status, proposal=None):
             apps[uid][app_index]["proposal"] = proposal
         save_applications(apps)
 
+############################################
+# КНОПКА «ВИДАЛЕННЯ» ТА ВИДАЛЕННЯ ЗАЯВКИ
+# ЗМІНЕНО: ТЕПЕР ПРИ ВИДАЛЕННІ ВСТАНОВЛЮЄТЬСЯ СТАТУС "deleted"
+#          РЯДОК У ТАБЛИЦІ1 ЗАФАРБОВУЄТЬСЯ В #de0000
+#          У ТАБЛИЦІ2 КЛІТИНКА У СТОВПЧИКУ L (12) ТАКОЖ ЗАФАРБОВУЄТЬСЯ В #de0000
+############################################
+
+def color_entire_row_deleted_in_table1(row: int):
+    """Зафарбовує увесь рядок у таблиці1 в колір #de0000."""
+    ws = get_worksheet1()
+    cell_range = f"A{row}:AZ{row}"
+    format_cell_range(ws, cell_range, deleted_format)
+
+def color_cell_deleted_in_table2(row: int, col: int = 12):
+    """Зафарбовує клітинку в таблиці2 (стовпець L = 12) у колір #de0000."""
+    ws2 = get_worksheet2()
+    cell_range = f"{rowcol_to_a1(row, col)}:{rowcol_to_a1(row, col)}"
+    format_cell_range(ws2, cell_range, deleted_format)
+
 def delete_application(user_id, app_index):
+    """
+    Тепер не видаляємо заявку з JSON повністю,
+    а призначаємо їй статус 'deleted', зафарбовуємо рядок у таблиці1
+    та клітинку L у таблиці2 в червоний колір #de0000.
+    """
     apps = load_applications()
     uid = str(user_id)
     if uid in apps and 0 <= app_index < len(apps[uid]):
-        del apps[uid][app_index]
+        app = apps[uid][app_index]
+        # Призначаємо статус 'deleted'
+        app["proposal_status"] = "deleted"
+
+        # Зафарбовуємо рядок у таблиці1 та клітинку у таблиці2
+        row_to_delete = app.get("sheet_row")
+        if row_to_delete:
+            color_entire_row_deleted_in_table1(row_to_delete)
+            color_cell_deleted_in_table2(row_to_delete, 12)
+
         save_applications(apps)
 
-############################################
-# ФУНКЦІЯ ВИДАЛЕННЯ ПІДТВЕРДЖЕНОЇ ЗАЯВКИ
-############################################
-
 def delete_confirmed_application_entirely(user_id, app_index):
+    """
+    Аналогічно для адміна при видаленні підтвердженої заявки.
+    Тепер замість фактичного видалення з таблиці ми просто
+    фарбуємо у червоний колір і ставимо 'deleted'.
+    """
     apps = load_applications()
     uid = str(user_id)
     if uid in apps and 0 <= app_index < len(apps[uid]):
         app = apps[uid][app_index]
         row_to_delete = app.get("sheet_row")
-        del apps[uid][app_index]
+
+        # Ставимо статус 'deleted'
+        app["proposal_status"] = "deleted"
 
         if row_to_delete:
             try:
-                delete_price_cell_in_table2(row_to_delete, 12)
-                ws = get_worksheet1()
-                ws.delete_rows(row_to_delete)
-                for u, user_apps in apps.items():
-                    for a in user_apps:
-                        old_row = a.get("sheet_row", 0)
-                        if old_row and old_row > row_to_delete:
-                            a["sheet_row"] = old_row - 1
+                # Фарбуємо рядок у таблиці1
+                color_entire_row_deleted_in_table1(row_to_delete)
+                # Фарбуємо клітинку L (12) у таблиці2
+                color_cell_deleted_in_table2(row_to_delete, 12)
             except Exception as e:
-                logging.exception(f"Помилка видалення рядка в Google Sheets: {e}")
+                logging.exception(f"Помилка зафарбовування рядка в Google Sheets: {e}")
 
+        # Залишаємо заявку у JSON, але зі статусом deleted
         save_applications(apps)
 
 ############################################
-#  ІНІЦІАЛІЗАЦІЯ GSPREAD
+# ІНІЦІАЛІЗАЦІЯ GSPREAD
 ############################################
 
 def init_gspread():
@@ -394,15 +430,12 @@ def update_google_sheet(data: dict) -> int:
     return new_row
 
 ############################################
-# ЗАФАРБОВУВАННЯ КЛІТИНОК У ТАБЛИЦІ2
+# ЗАФАРБОВУВАННЯ КЛІТИНОК У ТАБЛИЦІ2 (ЗАЛИШЕНО БЕЗ ЗМІН)
 ############################################
 
 def color_price_cell_in_table2(row: int, fmt: cellFormat, col: int = 12):
     ws2 = get_worksheet2()
     cell_range = f"{rowcol_to_a1(row, col)}:{rowcol_to_a1(row, col)}"
-    # Іноді можуть бути потрібні import'и: from gspread.utils import rowcol_to_a1
-    # Для акуратності:
-    cell_range = f"{gspread.utils.rowcol_to_a1(row, col)}:{gspread.utils.rowcol_to_a1(row, col)}"
     format_cell_range(ws2, cell_range, fmt)
 
 def color_cell_red(row: int):
@@ -415,6 +448,10 @@ def color_cell_yellow(row: int):
     color_price_cell_in_table2(row, yellow_format, 12)
 
 def delete_price_cell_in_table2(row: int, col: int = 12):
+    """
+    Залишено незмінним, хоча в нашому випадку ми вже не видаляємо клітинку
+    при видаленні заявки. Функція використовується деінде, тому залишаємо.
+    """
     ws2 = get_worksheet2()
     col_values = ws2.col_values(col)
     if row - 1 >= len(col_values):
@@ -688,7 +725,7 @@ async def admin_select_application(message: types.Message, state: FSMContext):
             break
 
     if not uid:
-        await message.answer("Заявку не знайдено. Спробуйте ще раз або натисніть 'Назад'.", 
+        await message.answer("Заявку не знайдено. Спробуйте ще раз або натисніть 'Назад'.",
                              reply_markup=remove_keyboard())
         return
 
@@ -897,12 +934,14 @@ async def admin_delete_confirmed_app(message: types.Message, state: FSMContext):
     delete_confirmed_application_entirely(user_id, app_index)
 
     if 0 <= chosen_index < len(confirmed_apps):
+        # У цій реалізації ми видаляємо запис із відображення,
+        # але він у JSON лишається зі статусом 'deleted'.
         confirmed_apps.pop(chosen_index)
 
     await state.update_data(confirmed_apps=confirmed_apps, selected_confirmed=None, chosen_confirmed_index=None)
 
     if not confirmed_apps:
-        await message.answer("Заявка видалена. Список підтверджених заявок тепер порожній.", reply_markup=get_admin_menu_keyboard())
+        await message.answer("Заявка видалена (позначена як deleted). Список підтверджених заявок тепер порожній.", reply_markup=get_admin_menu_keyboard())
         await state.finish()
     else:
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -920,7 +959,7 @@ async def admin_delete_confirmed_app(message: types.Message, state: FSMContext):
         kb.add("Назад")
 
         await AdminReview.viewing_confirmed_list.set()
-        await message.answer("Заявка видалена. Оновлений список:", reply_markup=kb)
+        await message.answer("Заявка видалена (статус deleted). Оновлений список:", reply_markup=kb)
 
 ############################################
 # ОБРОБНИК «ПОДАТИ ЗАЯВКУ»
@@ -1183,10 +1222,11 @@ async def delete_after_rejection(message: types.Message, state: FSMContext):
     app = user_apps[index]
     sheet_row = app.get("sheet_row")
     if sheet_row:
-        color_cell_red(sheet_row)
+        # Зафарбуємо клітинку в table2 (стовпець L) у червоний і рядок у таблиці1
+        # та встановимо статус "deleted"
+        delete_application(message.from_user.id, index)
 
-    delete_application(message.from_user.id, index)
-    await message.answer("Ваша заявка видалена.", reply_markup=get_main_menu_keyboard())
+    await message.answer("Ваша заявка видалена (позначена як deleted).", reply_markup=get_main_menu_keyboard())
     await state.finish()
 
 ############################################
@@ -1295,13 +1335,10 @@ async def confirm_deletion(message: types.Message, state: FSMContext):
         await state.finish()
         return
 
-    app = user_apps[index]
-    sheet_row = app.get("sheet_row")
-    if sheet_row:
-        color_cell_red(sheet_row)
+    # Замість повного видалення з JSON => позначимо 'deleted' + зафарбуємо
     delete_application(message.from_user.id, index)
 
-    await message.answer("Ваша заявка видалена.", reply_markup=get_main_menu_keyboard())
+    await message.answer("Ваша заявка видалена (позначена як deleted).", reply_markup=get_main_menu_keyboard())
     await state.finish()
 
 @dp.message_handler(Text(equals="Ні"), state=ApplicationStates.confirm_deletion)
