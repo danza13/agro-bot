@@ -386,7 +386,6 @@ from gspread_formatting import (
     format_cell_range,
     CellFormat,
     TextFormat,
-    Alignment,
     set_column_width
 )
 
