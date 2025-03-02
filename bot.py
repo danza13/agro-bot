@@ -20,7 +20,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiohttp import web
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from gspread_formatting import format_cell_range, cellFormat, Color
+from gspread_formatting import format_cell_range, cellFormat, Color, clear_cell_formatting
 from gspread.utils import rowcol_to_a1
 
 ############################################
@@ -357,15 +357,28 @@ def ensure_columns(ws, required_col: int):
 def delete_price_cell_in_table2(row: int, col: int = 12):
     """
     Видалити клітинку в таблиці2 (SHEET2_NAME) у вказаному рядку
-    зі зсувом усіх наступних рядків вгору.
+    зі зсувом усіх наступних рядків вгору, а також
+    прибрати колір (щоб не переносився на інші рядки).
     """
     ws2 = get_worksheet2()
+
+    # Спочатку очищаємо форматування (колір) у стовпці починаючи з цього рядка:
+    format_cell_range(
+        ws2,
+        f"{rowcol_to_a1(row, col)}:{rowcol_to_a1(ws2.row_count, col)}",
+        cellFormat(backgroundColor=Color(1, 1, 1))
+    )
+
     col_values = ws2.col_values(col)
     if row - 1 >= len(col_values):
         return
+
+    # Видаляємо значення (зсув вгору)
     col_values.pop(row - 1)
     for i in range(row - 1, len(col_values)):
         ws2.update_cell(i + 1, col, col_values[i])
+
+    # Очищаємо останню клітинку після зсуву
     last_row_to_clear = len(col_values) + 1
     ws2.update_cell(last_row_to_clear, col, "")
 
@@ -378,15 +391,14 @@ async def admin_remove_app_permanently(user_id: int, app_index: int):
     1) Зупинити poll_manager_proposals (pause_polling)
     2) Видалити заявку з applications_by_user.json (остаточно)
     3) Видалити рядок у sheets1
-    4) Видалити клітинку з таблиці2
-    5) Відновити poll_manager_proposals (resume_polling)
+    4) Видалити клітинку з таблиці2 (зі зсувом тексту й очищенням кольору)
+    5) Затримка 20 секунд, і відновити poll_manager_proposals (resume_polling)
     """
     pause_polling()
     try:
         apps = load_applications()
         uid = str(user_id)
         if uid not in apps or app_index < 0 or app_index >= len(apps[uid]):
-            resume_polling()
             return False
 
         app = apps[uid][app_index]
@@ -398,9 +410,13 @@ async def admin_remove_app_permanently(user_id: int, app_index: int):
         # 3) Видаляємо рядок у таблиці1
         if sheet_row:
             try:
+                # 4) Видаляємо клітинку в таблиці2 (колонка із ціною, за замовчуванням col=12)
                 delete_price_cell_in_table2(sheet_row, 12)
+
                 ws = get_worksheet1()
                 ws.delete_rows(sheet_row)
+
+                # Оновлюємо sheet_row у залишилихся заявках (все, що було нижче - змістилося вгору на 1)
                 updated_apps = load_applications()
                 for u_str, user_apps in updated_apps.items():
                     for a in user_apps:
@@ -413,6 +429,8 @@ async def admin_remove_app_permanently(user_id: int, app_index: int):
 
         return True
     finally:
+        # Додаємо затримку 20 секунд, щоб встигли оновитися дані в таблиці
+        await asyncio.sleep(20)
         resume_polling()
 
 ############################################
@@ -715,7 +733,6 @@ async def admin_decision_pending_user(message: types.Message, state: FSMContext)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("Назад")
     await message.answer(f"{response_text}\nНатисніть «Назад» для повернення в меню.", reply_markup=kb)
-
 
 #
 # 1.1) Перегляд Approved-користувачів
@@ -1687,7 +1704,7 @@ async def proposal_rejected(message: types.Message, state: FSMContext):
         color_cell_red(sheet_row)
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add("Видалити", "Очікувати")
+    kb.row("Видалити", "Очікувати")
     await message.answer("Пропозицію відхилено. Оберіть: Видалити заявку або Очікувати кращу пропозицію?",
                          reply_markup=kb)
     await ApplicationStates.proposal_reply.set()
@@ -1963,7 +1980,6 @@ async def edit_application_handler(message: types.Message, state: FSMContext):
         return
 
     webapp_url = "https://danza13.github.io/agro-webapp/webapp.html"
-    from urllib.parse import quote
     prefill = quote(json.dumps(webapp_data))
     url_with_data = f"{webapp_url}?data={prefill}"
 
