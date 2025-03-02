@@ -875,7 +875,7 @@ async def admin_view_approved_users(message: types.Message, state: FSMContext):
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.row("Редагувати", "Видалити")
-    kb.add("Вивантажити базу", "Назад")
+    kb.add("Назад")
 
     await state.update_data(selected_approved_user_id=str(user_id))
     await AdminReview.viewing_approved_user.set()
