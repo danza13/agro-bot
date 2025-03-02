@@ -707,7 +707,7 @@ async def admin_moderation_section_handler(message: types.Message, state: FSMCon
         approved_items = list(approved.items())  # [(uid, {fullname, phone}), ...]
         for i, (u_id, info) in enumerate(approved_items, start=1):
             fname = info.get("fullname", f"ID:{u_id}")
-            btn_text = f"{fname} | {u_id}"
+            btn_text = f"{fname}"
             row.append(btn_text)
             if len(row) == 2:
                 kb.row(*row)
