@@ -825,7 +825,7 @@ async def admin_decision_pending_user(message: types.Message, state: FSMContext)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("Назад")
     await message.answer(f"{response_text}\nНатисніть «Назад» для повернення в меню.", reply_markup=kb)
-
+    await AdminMenuStates.moderation_section.set()
 #
 # 1.1) Перегляд Approved-користувачів
 #
