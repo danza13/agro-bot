@@ -24,7 +24,7 @@ from gspread_formatting import format_cell_range, cellFormat, Color
 from gspread.utils import rowcol_to_a1
 
 ############################################
-# 1) ЧИТАЄМО ЗМІННІ ОТОЧЕННЯ ЗАМІСТЬ .env ТА credentials.json
+# 1) ЧИТАЄМО ЗМІННІ ОТОЧЕННЯ
 ############################################
 
 logging.basicConfig(
@@ -125,15 +125,12 @@ CONFIG = {
     CONFIG = config_module.CONFIG
 
 ############################################
-# 5) ФОРМАТИ ФОНУ (ЧЕРВОНИЙ, ЗЕЛЕНИЙ, ЖОВТИЙ) + ФОРМАТ ДЛЯ ВИДАЛЕНИХ ЗАЯВОК
+# 5) ФОРМАТИ ФОНУ (ЧЕРВОНИЙ, ЗЕЛЕНИЙ, ЖОВТИЙ)
 ############################################
 
 red_format = cellFormat(backgroundColor=Color(1, 0.8, 0.8))
 green_format = cellFormat(backgroundColor=Color(0.8, 1, 0.8))
 yellow_format = cellFormat(backgroundColor=Color(1, 1, 0.8))
-
-# Новий колір для видалених заявок (#de0000 => RGB(222,0,0) => Color(0.87, 0.0, 0.0))
-deleted_format = cellFormat(backgroundColor=Color(0.87, 0.0, 0.0))
 
 ############################################
 # 6) ДОДАТКОВІ ПОЛЯ У FRIENDLY-ФОРМАТ
@@ -180,12 +177,30 @@ def remove_keyboard():
     return types.ReplyKeyboardRemove()
 
 ############################################
+# ФЛАГ ПАУЗИ ДЛЯ ПОЛІНГУ
+############################################
+
+POLLING_PAUSED = False
+
+def pause_polling():
+    global POLLING_PAUSED
+    POLLING_PAUSED = True
+
+def resume_polling():
+    global POLLING_PAUSED
+    POLLING_PAUSED = False
+
+############################################
 # КЛАСИ СТАНІВ (FSM)
 ############################################
 
 class RegistrationStates(StatesGroup):
     waiting_for_fullname = State()
     waiting_for_phone = State()
+    preview = State()             # Попередній перегляд (ПІБ + телефон)
+    editing = State()            # Меню редагування
+    editing_fullname = State()   # Зміна ПІБ
+    editing_phone = State()      # Зміна телефону
 
 class ApplicationStates(StatesGroup):
     waiting_for_webapp_data = State()
@@ -197,11 +212,22 @@ class ApplicationStates(StatesGroup):
     waiting_for_phone_confirmation = State()
     waiting_for_price_confirmation = State()
 
+# Група станів для «Адмін-меню»
+class AdminMenuStates(StatesGroup):
+    choosing_section = State()     # «Модерація» або «Заявки» або «Вихід»
+    moderation_section = State()   # усередині «Модерація»
+    requests_section = State()     # усередині «Заявки»
+
 class AdminReview(StatesGroup):
     waiting_for_application_selection = State()
     waiting_for_decision = State()
     viewing_confirmed_list = State()
     viewing_confirmed_app = State()
+    # Стан для перегляду "Видалених" заявок
+    viewing_deleted_list = State()
+    viewing_deleted_app = State()
+    # Стан для перегляду бази Approved-користувачів
+    viewing_approved_list = State()
 
 ############################################
 # ФУНКЦІЇ РОБОТИ З ЛОКАЛЬНИМИ JSON-ФАЙЛАМИ
@@ -258,6 +284,7 @@ def block_user(user_id):
     if uid not in data.get("blocked_users", []):
         data.setdefault("blocked_users", []).append(uid)
         data.get("pending_users", {}).pop(uid, None)
+        data.get("approved_users", {}).pop(uid, None)
         save_users(data)
         logging.info(f"Користувач {uid} заблокований.")
 
@@ -274,75 +301,29 @@ def update_application_status(user_id, app_index, status, proposal=None):
             apps[uid][app_index]["proposal"] = proposal
         save_applications(apps)
 
-############################################
-# КНОПКА «ВИДАЛЕННЯ» ТА ВИДАЛЕННЯ ЗАЯВКИ
-# ЗМІНЕНО: ТЕПЕР ПРИ ВИДАЛЕННІ ВСТАНОВЛЮЄТЬСЯ СТАТУС "deleted"
-#          РЯДОК У ТАБЛИЦІ1 ЗАФАРБОВУЄТЬСЯ В #de0000
-#          У ТАБЛИЦІ2 КЛІТИНКА У СТОВПЧИКУ L (12) ТАКОЖ ЗАФАРБОВУЄТЬСЯ В #de0000
-############################################
-
-def color_entire_row_deleted_in_table1(row: int):
-    """Зафарбовує увесь рядок у таблиці1 в колір #de0000."""
-    ws = get_worksheet1()
-    cell_range = f"A{row}:AZ{row}"
-    format_cell_range(ws, cell_range, deleted_format)
-
-def color_cell_deleted_in_table2(row: int, col: int = 12):
-    """Зафарбовує клітинку в таблиці2 (стовпець L = 12) у колір #de0000."""
-    ws2 = get_worksheet2()
-    cell_range = f"{rowcol_to_a1(row, col)}:{rowcol_to_a1(row, col)}"
-    format_cell_range(ws2, cell_range, deleted_format)
-
-def delete_application(user_id, app_index):
+def delete_application_soft(user_id, app_index):
     """
-    Тепер не видаляємо заявку з JSON повністю,
-    а призначаємо їй статус 'deleted', зафарбовуємо рядок у таблиці1
-    та клітинку L у таблиці2 в червоний колір #de0000.
+    «М'яке» видалення: тільки змінюємо status -> 'deleted', не видаляємо з файлу.
+    Таким чином заявка переходить у «видалені», але ще лежить у файлі.
     """
     apps = load_applications()
     uid = str(user_id)
     if uid in apps and 0 <= app_index < len(apps[uid]):
-        app = apps[uid][app_index]
-        # Призначаємо статус 'deleted'
-        app["proposal_status"] = "deleted"
-
-        # Зафарбовуємо рядок у таблиці1 та клітинку у таблиці2
-        row_to_delete = app.get("sheet_row")
-        if row_to_delete:
-            color_entire_row_deleted_in_table1(row_to_delete)
-            color_cell_deleted_in_table2(row_to_delete, 12)
-
+        apps[uid][app_index]["proposal_status"] = "deleted"
         save_applications(apps)
 
-def delete_confirmed_application_entirely(user_id, app_index):
-    """
-    Аналогічно для адміна при видаленні підтвердженої заявки.
-    Тепер замість фактичного видалення з таблиці ми просто
-    фарбуємо у червоний колір і ставимо 'deleted'.
-    """
+def delete_application_from_file_entirely(user_id, app_index):
+    """Повне видалення з файлу (із масиву apps[uid])."""
     apps = load_applications()
     uid = str(user_id)
     if uid in apps and 0 <= app_index < len(apps[uid]):
-        app = apps[uid][app_index]
-        row_to_delete = app.get("sheet_row")
-
-        # Ставимо статус 'deleted'
-        app["proposal_status"] = "deleted"
-
-        if row_to_delete:
-            try:
-                # Фарбуємо рядок у таблиці1
-                color_entire_row_deleted_in_table1(row_to_delete)
-                # Фарбуємо клітинку L (12) у таблиці2
-                color_cell_deleted_in_table2(row_to_delete, 12)
-            except Exception as e:
-                logging.exception(f"Помилка зафарбовування рядка в Google Sheets: {e}")
-
-        # Залишаємо заявку у JSON, але зі статусом deleted
+        del apps[uid][app_index]
+        if not apps[uid]:
+            apps.pop(uid, None)  # Якщо масив став порожнім
         save_applications(apps)
 
 ############################################
-# ІНІЦІАЛІЗАЦІЯ GSPREAD
+# ФУНКЦІЇ ВИДАЛЕННЯ РЯДКА У GSheets
 ############################################
 
 def init_gspread():
@@ -367,13 +348,79 @@ def get_worksheet2():
     ws = sheet.worksheet(SHEET2_NAME)
     return ws
 
-############################################
-# ЗАПИС У ТАБЛИЦЮ 1
-############################################
-
 def ensure_columns(ws, required_col: int):
     if ws.col_count < required_col:
         ws.resize(rows=ws.row_count, cols=required_col)
+
+def delete_price_cell_in_table2(row: int, col: int = 12):
+    """
+    Видалити клітинку в таблиці2 (SHEET2_NAME) у вказаному рядку
+    зі зсувом усіх наступних рядків вгору.
+    """
+    ws2 = get_worksheet2()
+    col_values = ws2.col_values(col)
+    if row - 1 >= len(col_values):
+        return
+    col_values.pop(row - 1)
+    for i in range(row - 1, len(col_values)):
+        ws2.update_cell(i + 1, col, col_values[i])
+    last_row_to_clear = len(col_values) + 1
+    ws2.update_cell(last_row_to_clear, col, "")
+
+############################################
+# ПОВНЕ ВИДАЛЕННЯ ЗАЯВКИ АДМІНОМ (5 КРОКІВ)
+############################################
+
+async def admin_remove_app_permanently(user_id: int, app_index: int):
+    """
+    1) Зупинити poll_manager_proposals (pause_polling)
+    2) Видалити заявку з applications_by_user.json (остаточно)
+    3) Видалити рядок у sheets1
+    4) Видалити клітинку з таблиці2
+    5) Відновити poll_manager_proposals (resume_polling)
+    """
+    pause_polling()
+    try:
+        apps = load_applications()
+        uid = str(user_id)
+        if uid not in apps or app_index < 0 or app_index >= len(apps[uid]):
+            # Заявка не знайдена
+            resume_polling()
+            return False
+
+        app = apps[uid][app_index]
+        sheet_row = app.get("sheet_row")
+
+        # 2) Видаляємо з файлу
+        delete_application_from_file_entirely(user_id, app_index)
+
+        # 3) Видаляємо рядок у таблиці1
+        if sheet_row:
+            try:
+                delete_price_cell_in_table2(sheet_row, 12)
+                ws = get_worksheet1()
+                ws.delete_rows(sheet_row)
+                # Зсув усіх записів вище
+                # Вже зробили delete_price_cell_in_table2, тож:
+                # Тепер потрібно оновити .sheet_row у всіх заявок, що лишилися.
+                updated_apps = load_applications()
+                for u_str, user_apps in updated_apps.items():
+                    for a in user_apps:
+                        old_row = a.get("sheet_row", 0)
+                        if old_row and old_row > sheet_row:
+                            a["sheet_row"] = old_row - 1
+                save_applications(updated_apps)
+            except Exception as e:
+                logging.exception(f"Помилка видалення рядка в Google Sheets: {e}")
+
+        return True
+    finally:
+        # 5) Відновити polling
+        resume_polling()
+
+############################################
+# ЗАПИС У ТАБЛИЦЮ 1
+############################################
 
 def update_google_sheet(data: dict) -> int:
     ws = get_worksheet1()
@@ -430,7 +477,7 @@ def update_google_sheet(data: dict) -> int:
     return new_row
 
 ############################################
-# ЗАФАРБОВУВАННЯ КЛІТИНОК У ТАБЛИЦІ2 (ЗАЛИШЕНО БЕЗ ЗМІН)
+# ЗАФАРБОВУВАННЯ КЛІТИНОК У ТАБЛИЦІ2
 ############################################
 
 def color_price_cell_in_table2(row: int, fmt: cellFormat, col: int = 12):
@@ -447,23 +494,8 @@ def color_cell_green(row: int):
 def color_cell_yellow(row: int):
     color_price_cell_in_table2(row, yellow_format, 12)
 
-def delete_price_cell_in_table2(row: int, col: int = 12):
-    """
-    Залишено незмінним, хоча в нашому випадку ми вже не видаляємо клітинку
-    при видаленні заявки. Функція використовується деінде, тому залишаємо.
-    """
-    ws2 = get_worksheet2()
-    col_values = ws2.col_values(col)
-    if row - 1 >= len(col_values):
-        return
-    col_values.pop(row - 1)
-    for i in range(row - 1, len(col_values)):
-        ws2.update_cell(i + 1, col, col_values[i])
-    last_row_to_clear = len(col_values) + 1
-    ws2.update_cell(last_row_to_clear, col, "")
-
 ############################################
-# СТВОРЕННЯ КНОПОК
+# ГОЛОВНІ КЛАВІАТУРИ (ЮЗЕР / АДМІН)
 ############################################
 
 def get_main_menu_keyboard():
@@ -471,373 +503,257 @@ def get_main_menu_keyboard():
     kb.add("Подати заявку", "Переглянути мої заявки")
     return kb
 
-def get_admin_menu_keyboard():
+def get_admin_root_menu():
+    """
+    Головне меню адміна: 2 кнопки — Модерація, Заявки (і, можливо, Вихід)
+    """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("Користувачі на модерацію", "Переглянути заявки культур")
-    kb.add("Переглянути підтверджені заявки")
+    kb.row("Модерація", "Заявки")
+    kb.add("Вийти з адмін-меню")
+    return kb
+
+def get_admin_moderation_menu():
+    """
+    Меню «Модерація»:
+      - Користувачі на модерацію
+      - База користувачів
+      - Назад
+    """
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("Користувачі на модерацію", "База користувачів")
+    kb.add("Назад")
+    return kb
+
+def get_admin_requests_menu():
+    """
+    Меню «Заявки»:
+      - Підтверджені
+      - Видалені
+      - Переглянути заявки культур (поки що порожнє місце)
+      - Назад
+    """
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("Підтверджені", "Видалені")
+    kb.add("Переглянути заявки культур")
+    kb.add("Назад")
     return kb
 
 ############################################
-# ОБРОБНИК ДАНИХ ІЗ WEBAPP
+# ХЕНДЛЕР /admin
 ############################################
-
-async def process_webapp_data_direct(user_id: int, data: dict, edit_index: int = None, sheet_row: int = None):
-    if not data or not any(data.values()):
-        logging.warning("Отримано порожні дані, повідомлення не надсилається.")
-        return
-
-    message_lines = [
-        "<b>Перевірте заявку:</b>",
-        f"ФГ: {data.get('fgh_name', '')}",
-        f"ЄДРПОУ: {data.get('edrpou', '')}",
-        f"Область: {data.get('region', '')}",
-        f"Район: {data.get('district', '')}",
-        f"Місто: {data.get('city', '')}",
-        f"Група: {data.get('group', '')}",
-        f"Культура: {data.get('culture', '')}"
-    ]
-    extra = data.get("extra_fields", {})
-    if extra:
-        message_lines.append("Додаткові параметри:")
-        for key, value in extra.items():
-            ukr_name = friendly_names.get(key, key.capitalize())
-            message_lines.append(f"{ukr_name}: {value}")
-
-    message_lines.extend([
-        f"Кількість: {data.get('quantity', '')} т",
-        f"Форма оплати: {data.get('payment_form', '')}",
-        f"Валюта: {data.get('currency', '')}",
-        f"Ціна: {data.get('price', '')}"
-    ])
-
-    preview_text = "\n".join(message_lines)
-    reply_kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    reply_kb.add("Підтвердити", "Редагувати", "Скасувати")
-    await bot.send_message(user_id, preview_text, reply_markup=reply_kb)
-
-    state = dp.current_state(chat=user_id, user=user_id)
-    if edit_index is not None and sheet_row is not None:
-        await state.update_data(edit_index=edit_index, sheet_row=sheet_row, webapp_data=data)
-        await state.set_state(ApplicationStates.editing_application.state)
-    else:
-        await state.update_data(webapp_data=data)
-        await state.set_state(ApplicationStates.confirm_application.state)
-
-@dp.message_handler(lambda message: message.text and "/webapp_data" in message.text, state=ApplicationStates.waiting_for_webapp_data)
-async def webapp_data_handler_text(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    try:
-        prefix = "/webapp_data "
-        data_str = message.text[len(prefix):].strip() if message.text.startswith(prefix) else message.text.split("/webapp_data", 1)[-1].strip()
-        data_dict = json.loads(data_str)
-        await state.update_data(webapp_data=data_dict)
-        current_data = await state.get_data()
-        sheet_row = current_data.get("sheet_row")
-        edit_index = current_data.get("edit_index")
-        await process_webapp_data_direct(user_id, data_dict, edit_index, sheet_row)
-    except Exception as e:
-        logging.exception(f"Помилка обробки даних для user_id={user_id}: {e}")
-        await bot.send_message(user_id, "Помилка обробки даних. Спробуйте ще раз.", reply_markup=remove_keyboard())
-
-@dp.message_handler(content_types=types.ContentType.WEB_APP_DATA, state=ApplicationStates.waiting_for_webapp_data)
-async def webapp_data_handler_web_app(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    try:
-        data_str = message.web_app_data.data
-        data_dict = json.loads(data_str)
-        await state.update_data(webapp_data=data_dict)
-        current_data = await state.get_data()
-        sheet_row = current_data.get("sheet_row")
-        edit_index = current_data.get("edit_index")
-        await process_webapp_data_direct(user_id, data_dict, edit_index, sheet_row)
-    except Exception as e:
-        logging.exception(f"Помилка WEB_APP_DATA для user_id={user_id}: {e}")
-        await bot.send_message(user_id, "Помилка обробки даних. Спробуйте ще раз.", reply_markup=remove_keyboard())
-
-@dp.message_handler(Text(equals="Редагувати"), state=[ApplicationStates.confirm_application, ApplicationStates.editing_application])
-async def edit_application_handler(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    webapp_data = data.get("webapp_data")
-    if not webapp_data:
-        await message.answer("Немає даних для редагування.", reply_markup=get_main_menu_keyboard())
-        await state.finish()
-        return
-
-    webapp_url = "https://danza13.github.io/agro-webapp/webapp.html"
-    from urllib.parse import quote
-    prefill = quote(json.dumps(webapp_data))
-    url_with_data = f"{webapp_url}?data={prefill}"
-
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(types.KeyboardButton("Відкрити WebApp для редагування", web_app=types.WebAppInfo(url=url_with_data)))
-    kb.row("Скасувати")
-    await message.answer("Редагуйте заявку у WebApp:", reply_markup=kb)
-    await state.set_state(ApplicationStates.waiting_for_webapp_data.state)
-
-@dp.message_handler(Text(equals="Скасувати"), state=[ApplicationStates.waiting_for_webapp_data,
-                                                     ApplicationStates.confirm_application,
-                                                     ApplicationStates.editing_application])
-async def cancel_process_reply(message: types.Message, state: FSMContext):
-    await state.finish()
-    await message.answer("Процес скасовано. Головне меню:", reply_markup=get_main_menu_keyboard())
-
-############################################
-# ОБРОБНИК /start (РЕЄСТРАЦІЯ КОРИСТУВАЧА)
-############################################
-
-@dp.message_handler(commands=["start"], state="*")
-async def cmd_start(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    await state.finish()
-    users = load_users()
-    uid = str(user_id)
-
-    if uid in users.get("blocked_users", []):
-        await message.answer("На жаль, у Вас немає доступу.", reply_markup=remove_keyboard())
-        return
-
-    if uid in users.get("approved_users", {}):
-        await message.answer("Вітаємо! Оберіть дію:", reply_markup=get_main_menu_keyboard())
-        return
-
-    if uid in users.get("pending_users", {}):
-        await message.answer("Ваша заявка на модерацію вже відправлена. Очікуйте.", reply_markup=remove_keyboard())
-        return
-
-    await message.answer("Введіть, будь ласка, своє ПІБ (повністю).", reply_markup=remove_keyboard())
-    await RegistrationStates.waiting_for_fullname.set()
-
-@dp.message_handler(commands=["menu"], state="*")
-async def show_menu(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    users = load_users()
-    uid = str(user_id)
-    if uid not in users.get("approved_users", {}):
-        await message.answer("Немає доступу. Очікуйте схвалення.", reply_markup=remove_keyboard())
-        return
-    await state.finish()
-    await message.answer("Головне меню:", reply_markup=get_main_menu_keyboard())
 
 @dp.message_handler(commands=["admin"], state="*")
-async def admin_menu(message: types.Message, state: FSMContext):
-    if str(message.from_user.id) not in ADMINS:
-        await message.answer("Немає доступу.", reply_markup=remove_keyboard())
-        return
-    await state.finish()
-    await message.answer("Адмін меню:", reply_markup=get_admin_menu_keyboard())
-
-@dp.message_handler(state=RegistrationStates.waiting_for_fullname)
-async def process_fullname(message: types.Message, state: FSMContext):
-    fullname = message.text.strip()
-    if not fullname:
-        await message.answer("ПІБ не може бути порожнім.")
-        return
-    await state.update_data(fullname=fullname)
-
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    keyboard.add(types.KeyboardButton("Поділитись контактом", request_contact=True))
-    await message.answer("Введіть номер телефону (+380XXXXXXXXX) або поділіться контактом:", reply_markup=keyboard)
-    await RegistrationStates.waiting_for_phone.set()
-
-@dp.message_handler(content_types=types.ContentType.CONTACT, state=RegistrationStates.waiting_for_phone)
-async def process_phone_contact(message: types.Message, state: FSMContext):
-    phone = message.contact.phone_number if message.contact and message.contact.phone_number else ""
-    phone = re.sub(r"[^\d+]", "", phone)
-    await state.update_data(phone=phone)
-    await complete_registration(message, state)
-
-@dp.message_handler(state=RegistrationStates.waiting_for_phone)
-async def process_phone_text(message: types.Message, state: FSMContext):
-    phone = re.sub(r"[^\d+]", "", message.text.strip())
-    if not re.fullmatch(r"\+380\d{9}", phone):
-        await message.answer("Невірний формат. Введіть номер у форматі +380XXXXXXXXX")
-        return
-    await state.update_data(phone=phone)
-    await complete_registration(message, state)
-
-async def complete_registration(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    fullname = data.get("fullname")
-    phone = data.get("phone")
-    user_id = message.from_user.id
-    uid = str(user_id)
-
-    users = load_users()
-    users.setdefault("pending_users", {})[uid] = {
-        "fullname": fullname,
-        "phone": phone,
-        "timestamp": datetime.now().isoformat()
-    }
-    save_users(users)
-
-    await state.finish()
-    await message.answer("Ваша заявка на модерацію відправлена.", reply_markup=remove_keyboard())
-
-    for admin in ADMINS:
-        try:
-            await bot.send_message(
-                admin,
-                f"Новий користувач на модерацію:\nПІБ: {fullname}\nНомер: {phone}\nUser ID: {user_id}",
-                reply_markup=remove_keyboard()
-            )
-        except Exception as e:
-            logging.exception(f"Не вдалося сповістити адміністратора {admin}: {e}")
-
-############################################
-# АДМІНСЬКІ КОМАНДИ: КОРИСТУВАЧІ НА МОДЕРАЦІЮ
-############################################
-
-@dp.message_handler(Text(equals="Користувачі на модерацію"), state="*")
-async def admin_pending_requests(message: types.Message, state: FSMContext):
+async def admin_entry_point(message: types.Message, state: FSMContext):
     if str(message.from_user.id) not in ADMINS:
         await message.answer("Немає доступу.", reply_markup=remove_keyboard())
         return
 
-    users_data = load_users()
-    pending = users_data.get("pending_users", {})
-    if not pending:
-        await message.answer("Немає заявок на модерацію.", reply_markup=remove_keyboard())
-        return
+    await state.finish()
+    await message.answer("Ви в адмін-меню. Оберіть розділ:", reply_markup=get_admin_root_menu())
+    await AdminMenuStates.choosing_section.set()
 
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    for uid, info in pending.items():
-        kb.add(info.get("fullname", "Невідомо"))
-    kb.add("Назад")
-    await message.answer("Оберіть заявку для перегляду:", reply_markup=kb)
-    await AdminReview.waiting_for_application_selection.set()
-    await state.update_data(pending_dict=pending)
+############################################
+# ХЕНДЛЕР ДЛЯ ГОЛОВНОГО АДМІН-МЕНЮ
+############################################
 
-@dp.message_handler(state=AdminReview.waiting_for_application_selection)
-async def admin_select_application(message: types.Message, state: FSMContext):
-    if message.text == "Назад":
+@dp.message_handler(state=AdminMenuStates.choosing_section)
+async def admin_menu_choosing_section(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+
+    if text == "Модерація":
+        await message.answer("Розділ 'Модерація'. Оберіть дію:", reply_markup=get_admin_moderation_menu())
+        await AdminMenuStates.moderation_section.set()
+    elif text == "Заявки":
+        await message.answer("Розділ 'Заявки'. Оберіть дію:", reply_markup=get_admin_requests_menu())
+        await AdminMenuStates.requests_section.set()
+    elif text == "Вийти з адмін-меню":
         await state.finish()
-        await message.answer("Адмін меню:", reply_markup=get_admin_menu_keyboard())
-        return
-
-    selected_fullname = message.text.strip()
-    data = await state.get_data()
-    pending = data.get("pending_dict", {})
-
-    uid = None
-    for k, info in pending.items():
-        if info.get("fullname", "").strip() == selected_fullname:
-            uid = k
-            break
-
-    if not uid:
-        await message.answer("Заявку не знайдено. Спробуйте ще раз або натисніть 'Назад'.",
-                             reply_markup=remove_keyboard())
-        return
-
-    info = pending[uid]
-    timestamp_str = info.get("timestamp", "")
-    if timestamp_str:
-        dt = datetime.fromisoformat(timestamp_str)
-        dt_kyiv = dt.astimezone(ZoneInfo("Europe/Kiev"))
-        formatted_timestamp = dt_kyiv.strftime("%d.%m.%Y | %H:%M:%S")
+        await message.answer("Вихід з адмін-меню. Повертаємось у звичайне меню:", reply_markup=get_main_menu_keyboard())
     else:
-        formatted_timestamp = "Невідомо"
-
-    text = (
-        f"Користувач на модерацію:\n"
-        f"User ID: {uid}\n"
-        f"ПІБ: {info.get('fullname', 'Невідомо')}\n"
-        f"Номер: {info.get('phone', '')}\n"
-        f"Дата та час: {formatted_timestamp}"
-    )
-
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add("Дозволити", "Заблокувати")
-    kb.add("Назад")
-
-    await state.update_data(selected_uid=uid)
-    await message.answer(text, reply_markup=kb)
-    await AdminReview.waiting_for_decision.set()
-
-@dp.message_handler(lambda message: message.text in ["Дозволити", "Заблокувати"], state=AdminReview.waiting_for_decision)
-async def admin_decision(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    uid = data.get("selected_uid")
-
-    if not uid:
-        await message.answer("Заявку не знайдено.", reply_markup=remove_keyboard())
-        return
-
-    if message.text == "Дозволити":
-        approve_user(uid)
-        response = "Користувача дозволено."
-        try:
-            await bot.send_message(uid, "Ви пройшли модерацію! Тепер можете користуватись ботом.", reply_markup=remove_keyboard())
-        except Exception as e:
-            logging.exception(f"Не вдалося сповістити користувача: {e}")
-    else:
-        block_user(uid)
-        response = "Користувача заблоковано."
-        try:
-            await bot.send_message(uid, "На жаль, Ви не пройшли модерацію.", reply_markup=remove_keyboard())
-        except Exception as e:
-            logging.exception(f"Не вдалося сповістити користувача: {e}")
-
-    users_data = load_users()
-    if uid in users_data.get("pending_users", {}):
-        users_data["pending_users"].pop(uid)
-        save_users(users_data)
-
-    await message.answer(response + " Натисніть 'Назад'.", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("Назад"))
-
-@dp.message_handler(Text(equals="Назад"), state=AdminReview.waiting_for_decision)
-async def admin_back_from_decision(message: types.Message, state: FSMContext):
-    await state.finish()
-    await message.answer("Адмін меню:", reply_markup=get_admin_menu_keyboard())
+        await message.answer("Будь ласка, оберіть із меню: «Модерація», «Заявки» або «Вийти з адмін-меню».")
 
 ############################################
-# ПЕРЕГЛЯД ПІДТВЕРДЖЕНИХ ЗАЯВОК (АДМІН)
+# 1) РОЗДІЛ «МОДЕРАЦІЯ»
 ############################################
 
-@dp.message_handler(Text(equals="Переглянути підтверджені заявки"), state="*")
-async def admin_view_confirmed_applications(message: types.Message, state: FSMContext):
-    if str(message.from_user.id) not in ADMINS:
-        await message.answer("Немає доступу.", reply_markup=remove_keyboard())
+@dp.message_handler(state=AdminMenuStates.moderation_section)
+async def admin_moderation_section_handler(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+
+    if text == "Користувачі на модерацію":
+        # Переходимо до старої логіки перегляду pending
+        users_data = load_users()
+        pending = users_data.get("pending_users", {})
+
+        if not pending:
+            await message.answer("Немає заявок на модерацію.", reply_markup=get_admin_moderation_menu())
+            return
+
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        for uid, info in pending.items():
+            kb.add(info.get("fullname", "Невідомо"))
+        kb.add("Назад")
+        await message.answer("Оберіть заявку для перегляду:", reply_markup=kb)
+
+        await AdminReview.waiting_for_application_selection.set()
+        await state.update_data(pending_dict=pending, from_moderation_menu=True)
+
+    elif text == "База користувачів":
+        # Відображаємо approved-користувачів
+        users_data = load_users()
+        approved = users_data.get("approved_users", {})
+        if not approved:
+            await message.answer("Немає схвалених користувачів.", reply_markup=get_admin_moderation_menu())
+            return
+
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        for uid, info in approved.items():
+            fullname = info.get("fullname", f"ID:{uid}")
+            kb.add(fullname)
+        kb.add("Назад")
+
+        await message.answer("Список схвалених користувачів:", reply_markup=kb)
+        await AdminReview.viewing_approved_list.set()
+        await state.update_data(approved_dict=approved, from_moderation_menu=True)
+
+    elif text == "Назад":
+        # Повертаємось на головне адмін-меню
+        await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
+        await AdminMenuStates.choosing_section.set()
+    else:
+        await message.answer("Оберіть зі списку: «Користувачі на модерацію», «База користувачів» або «Назад».")
+
+#
+# Перегляд Approved-користувачів (поки що без особливих дій, окрім "Назад")
+#
+
+@dp.message_handler(state=AdminReview.viewing_approved_list)
+async def admin_view_approved_users(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    data = await state.get_data()
+    from_moderation_menu = data.get("from_moderation_menu", False)
+
+    if text == "Назад":
+        if from_moderation_menu:
+            await message.answer("Повертаємось до розділу 'Модерація':", reply_markup=get_admin_moderation_menu())
+            await AdminMenuStates.moderation_section.set()
+        else:
+            # На всяк випадок fallback
+            await state.finish()
+            await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
         return
 
-    apps = load_applications()
-    confirmed_apps = []
-    for user_id, user_applications in apps.items():
-        for idx, app_data in enumerate(user_applications):
-            if app_data.get("proposal_status") == "confirmed":
-                confirmed_apps.append({
-                    "user_id": user_id,
-                    "app_index": idx,
-                    "app_data": app_data
-                })
+    # Поки що не передбачено дій для перегляду / редагування approved-користувача.
+    await message.answer("Дій з цим користувачем поки немає. Оберіть «Назад».", reply_markup=get_admin_moderation_menu())
+    await AdminMenuStates.moderation_section.set()
 
-    if not confirmed_apps:
-        await message.answer("Немає підтверджених заявок.", reply_markup=get_admin_menu_keyboard())
-        return
+############################################
+# 2) РОЗДІЛ «ЗАЯВКИ»
+############################################
 
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    row = []
-    for i, entry in enumerate(confirmed_apps, start=1):
-        culture = entry["app_data"].get("culture", "Невідомо")
-        quantity = entry["app_data"].get("quantity", "Невідомо")
-        btn_text = f"{i}. {culture} | {quantity}"
-        row.append(btn_text)
-        if len(row) == 2:
+@dp.message_handler(state=AdminMenuStates.requests_section)
+async def admin_requests_section_handler(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+
+    if text == "Підтверджені":
+        # Показуємо старий список "confirmed"
+        apps = load_applications()
+        confirmed_apps = []
+        for user_id, user_applications in apps.items():
+            for idx, app_data in enumerate(user_applications):
+                if app_data.get("proposal_status") == "confirmed":
+                    confirmed_apps.append({
+                        "user_id": user_id,
+                        "app_index": idx,
+                        "app_data": app_data
+                    })
+
+        if not confirmed_apps:
+            await message.answer("Немає підтверджених заявок.", reply_markup=get_admin_requests_menu())
+            return
+
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        row = []
+        for i, entry in enumerate(confirmed_apps, start=1):
+            culture = entry["app_data"].get("culture", "Невідомо")
+            quantity = entry["app_data"].get("quantity", "Невідомо")
+            btn_text = f"{i}. {culture} | {quantity}"
+            row.append(btn_text)
+            if len(row) == 2:
+                kb.row(*row)
+                row = []
+        if row:
             kb.row(*row)
-            row = []
-    if row:
-        kb.row(*row)
-    kb.add("Назад")
+        kb.add("Назад")
 
-    await state.update_data(confirmed_apps=confirmed_apps)
-    await AdminReview.viewing_confirmed_list.set()
-    await message.answer("Список підтверджених заявок:", reply_markup=kb)
+        await state.update_data(confirmed_apps=confirmed_apps, from_requests_menu=True)
+        await AdminReview.viewing_confirmed_list.set()
+        await message.answer("Список підтверджених заявок:", reply_markup=kb)
+
+    elif text == "Видалені":
+        # Показуємо список заявок зі статусом "deleted"
+        apps = load_applications()
+        deleted_apps = []
+        for user_id, user_applications in apps.items():
+            for idx, app_data in enumerate(user_applications):
+                if app_data.get("proposal_status") == "deleted":
+                    deleted_apps.append({
+                        "user_id": user_id,
+                        "app_index": idx,
+                        "app_data": app_data
+                    })
+
+        if not deleted_apps:
+            await message.answer("Немає видалених заявок.", reply_markup=get_admin_requests_menu())
+            return
+
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        row = []
+        for i, entry in enumerate(deleted_apps, start=1):
+            culture = entry["app_data"].get("culture", "Невідомо")
+            quantity = entry["app_data"].get("quantity", "Невідомо")
+            btn_text = f"{i}. {culture} | {quantity}"
+            row.append(btn_text)
+            if len(row) == 2:
+                kb.row(*row)
+                row = []
+        if row:
+            kb.row(*row)
+        kb.add("Назад")
+
+        await state.update_data(deleted_apps=deleted_apps, from_requests_menu=True)
+        await AdminReview.viewing_deleted_list.set()
+        await message.answer("Список «видалених» заявок:", reply_markup=kb)
+
+    elif text == "Переглянути заявки культур":
+        # Поки що порожня реалізація
+        await message.answer("Функціонал «Переглянути заявки культур» ще не реалізовано.", reply_markup=get_admin_requests_menu())
+
+    elif text == "Назад":
+        # Повертаємось на головне адмін-меню
+        await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
+        await AdminMenuStates.choosing_section.set()
+    else:
+        await message.answer("Оберіть дію: «Підтверджені», «Видалені», «Переглянути заявки культур» або «Назад».")
+
+############################################
+# ПЕРЕГЛЯД «ПІДТВЕРДЖЕНИХ» (ЛОГІКА СТАРА) (AdminReview.viewing_confirmed_list)
+############################################
 
 @dp.message_handler(state=AdminReview.viewing_confirmed_list)
 async def admin_view_confirmed_list_choice(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    confirmed_apps = data.get("confirmed_apps", [])
+    from_requests_menu = data.get("from_requests_menu", False)
+
     if message.text == "Назад":
-        await state.finish()
-        await message.answer("Адмін меню:", reply_markup=get_admin_menu_keyboard())
+        if from_requests_menu:
+            await message.answer("Розділ 'Заявки':", reply_markup=get_admin_requests_menu())
+            await AdminMenuStates.requests_section.set()
+        else:
+            # fallback
+            await state.finish()
+            await message.answer("Адмін меню:", reply_markup=get_admin_root_menu())
         return
 
     split_msg = message.text.split('.', 1)
@@ -846,8 +762,6 @@ async def admin_view_confirmed_list_choice(message: types.Message, state: FSMCon
         return
 
     choice = int(split_msg[0])
-    data = await state.get_data()
-    confirmed_apps = data.get("confirmed_apps", [])
     if choice < 1 or choice > len(confirmed_apps):
         await message.answer("Невірний вибір.", reply_markup=remove_keyboard())
         return
@@ -891,59 +805,24 @@ async def admin_view_confirmed_list_choice(message: types.Message, state: FSMCon
     await AdminReview.viewing_confirmed_app.set()
     await message.answer("\n".join(details), parse_mode="HTML", reply_markup=kb)
 
-@dp.message_handler(Text(equals="Назад"), state=AdminReview.viewing_confirmed_app)
-async def admin_back_to_confirmed_list(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    confirmed_apps = data.get("confirmed_apps", [])
-    if not confirmed_apps:
-        await state.finish()
-        await message.answer("Список підтверджених заявок тепер порожній.", reply_markup=get_admin_menu_keyboard())
-        return
-
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    row = []
-    for i, entry in enumerate(confirmed_apps, start=1):
-        culture = entry["app_data"].get("culture", "Невідомо")
-        quantity = entry["app_data"].get("quantity", "Невідомо")
-        btn_text = f"{i}. {culture} | {quantity}"
-        row.append(btn_text)
-        if len(row) == 2:
-            kb.row(*row)
-            row = []
-    if row:
-        kb.row(*row)
-    kb.add("Назад")
-
-    await AdminReview.viewing_confirmed_list.set()
-    await message.answer("Список підтверджених заявок:", reply_markup=kb)
-
-@dp.message_handler(Text(equals="Видалити"), state=AdminReview.viewing_confirmed_app)
-async def admin_delete_confirmed_app(message: types.Message, state: FSMContext):
+@dp.message_handler(state=AdminReview.viewing_confirmed_app)
+async def admin_view_confirmed_app_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
     selected_entry = data.get("selected_confirmed")
     confirmed_apps = data.get("confirmed_apps", [])
     chosen_index = data.get("chosen_confirmed_index")
-
     if not selected_entry or chosen_index is None:
-        await message.answer("Немає заявки для видалення.", reply_markup=get_admin_menu_keyboard())
+        await message.answer("Немає заявки для опрацювання.", reply_markup=get_admin_requests_menu())
         await state.finish()
         return
 
-    user_id = int(selected_entry["user_id"])
-    app_index = selected_entry["app_index"]
-    delete_confirmed_application_entirely(user_id, app_index)
+    if message.text == "Назад":
+        # Повертаємось до списку
+        if not confirmed_apps:
+            await state.finish()
+            await message.answer("Список підтверджених заявок тепер порожній.", reply_markup=get_admin_requests_menu())
+            return
 
-    if 0 <= chosen_index < len(confirmed_apps):
-        # У цій реалізації ми видаляємо запис із відображення,
-        # але він у JSON лишається зі статусом 'deleted'.
-        confirmed_apps.pop(chosen_index)
-
-    await state.update_data(confirmed_apps=confirmed_apps, selected_confirmed=None, chosen_confirmed_index=None)
-
-    if not confirmed_apps:
-        await message.answer("Заявка видалена (позначена як deleted). Список підтверджених заявок тепер порожній.", reply_markup=get_admin_menu_keyboard())
-        await state.finish()
-    else:
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         row = []
         for i, entry in enumerate(confirmed_apps, start=1):
@@ -959,10 +838,363 @@ async def admin_delete_confirmed_app(message: types.Message, state: FSMContext):
         kb.add("Назад")
 
         await AdminReview.viewing_confirmed_list.set()
-        await message.answer("Заявка видалена (статус deleted). Оновлений список:", reply_markup=kb)
+        await message.answer("Список підтверджених заявок:", reply_markup=kb)
+        return
+
+    elif message.text == "Видалити":
+        # «М'яке» видалення: ставимо статус "deleted"
+        user_id = int(selected_entry["user_id"])
+        app_index = selected_entry["app_index"]
+        update_application_status(user_id, app_index, "deleted")
+
+        # Оновлюємо confirmed_apps список, видаляємо зі списку
+        if 0 <= chosen_index < len(confirmed_apps):
+            confirmed_apps.pop(chosen_index)
+        await state.update_data(confirmed_apps=confirmed_apps, selected_confirmed=None, chosen_confirmed_index=None)
+
+        await message.answer("Заявка перенесена у 'видалені'.", reply_markup=get_admin_requests_menu())
+        # Повертаємось на меню «Заявки»
+        await AdminMenuStates.requests_section.set()
+
+    else:
+        await message.answer("Оберіть «Видалити» або «Назад».")
 
 ############################################
-# ОБРОБНИК «ПОДАТИ ЗАЯВКУ»
+# ПЕРЕГЛЯД «ВИДАЛЕНИХ» ЗАЯВОК (AdminReview.viewing_deleted_list)
+############################################
+
+@dp.message_handler(state=AdminReview.viewing_deleted_list)
+async def admin_view_deleted_list_choice(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    deleted_apps = data.get("deleted_apps", [])
+    from_requests_menu = data.get("from_requests_menu", False)
+
+    if message.text == "Назад":
+        if from_requests_menu:
+            await message.answer("Розділ 'Заявки':", reply_markup=get_admin_requests_menu())
+            await AdminMenuStates.requests_section.set()
+        else:
+            # fallback
+            await state.finish()
+            await message.answer("Адмін меню:", reply_markup=get_admin_root_menu())
+        return
+
+    split_msg = message.text.split('.', 1)
+    if len(split_msg) < 2 or not split_msg[0].isdigit():
+        await message.answer("Оберіть номер заявки у форматі 'X. Культура | Кількість' або натисніть 'Назад'.")
+        return
+
+    choice = int(split_msg[0])
+    if choice < 1 or choice > len(deleted_apps):
+        await message.answer("Невірний вибір.", reply_markup=remove_keyboard())
+        return
+
+    selected_entry = deleted_apps[choice - 1]
+    app_data = selected_entry["app_data"]
+    timestamp = app_data.get("timestamp", "")
+    try:
+        dt = datetime.fromisoformat(timestamp)
+        formatted_date = dt.strftime("%d.%m.%Y")
+    except Exception:
+        formatted_date = timestamp
+
+    details = [
+        "<b>«ВИДАЛЕНА» ЗАЯВКА:</b>",
+        f"Дата створення: <b>{formatted_date}</b>",
+        f"ФГ: <b>{app_data.get('fgh_name', '')}</b>",
+        f"ЄДРПОУ: <b>{app_data.get('edrpou', '')}</b>",
+        f"Область: <b>{app_data.get('region', '')}</b>",
+        f"Район: <b>{app_data.get('district', '')}</b>",
+        f"Місто: <b>{app_data.get('city', '')}</b>",
+        f"Група: <b>{app_data.get('group', '')}</b>",
+        f"Культура: <b>{app_data.get('culture', '')}</b>",
+        f"Кількість: <b>{app_data.get('quantity', '')} т</b>",
+        f"Форма оплати: <b>{app_data.get('payment_form', '')}</b>",
+        f"Валюта: <b>{app_data.get('currency', '')}</b>",
+        f"Бажана ціна: <b>{app_data.get('price', '')}</b>",
+        f"Пропозиція ціни: <b>{app_data.get('proposal', '')}</b>",
+        "\nЦя заявка позначена як «deleted»."
+    ]
+
+    extra = app_data.get("extra_fields", {})
+    if extra:
+        details.append("Додаткові параметри:")
+        for key, value in extra.items():
+            details.append(f"{friendly_names.get(key, key.capitalize())}: {value}")
+
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add("Видалити назавжди", "Назад")
+
+    await state.update_data(selected_deleted=selected_entry, chosen_deleted_index=choice - 1)
+    await AdminReview.viewing_deleted_app.set()
+    await message.answer("\n".join(details), parse_mode="HTML", reply_markup=kb)
+
+@dp.message_handler(state=AdminReview.viewing_deleted_app)
+async def admin_view_deleted_app_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    selected_entry = data.get("selected_deleted")
+    deleted_apps = data.get("deleted_apps", [])
+    chosen_index = data.get("chosen_deleted_index")
+    if not selected_entry or chosen_index is None:
+        await message.answer("Немає заявки для опрацювання.", reply_markup=get_admin_requests_menu())
+        await state.finish()
+        return
+
+    if message.text == "Назад":
+        # Повертаємось до списку видалених
+        if not deleted_apps:
+            await message.answer("Список видалених заявок порожній.", reply_markup=get_admin_requests_menu())
+            await AdminMenuStates.requests_section.set()
+            return
+
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        row = []
+        for i, entry in enumerate(deleted_apps, start=1):
+            culture = entry["app_data"].get("culture", "Невідомо")
+            quantity = entry["app_data"].get("quantity", "Невідомо")
+            btn_text = f"{i}. {culture} | {quantity}"
+            row.append(btn_text)
+            if len(row) == 2:
+                kb.row(*row)
+                row = []
+        if row:
+            kb.row(*row)
+        kb.add("Назад")
+
+        await AdminReview.viewing_deleted_list.set()
+        await message.answer("Список видалених заявок:", reply_markup=kb)
+        return
+
+    elif message.text == "Видалити назавжди":
+        user_id = int(selected_entry["user_id"])
+        app_index = selected_entry["app_index"]
+
+        success = await admin_remove_app_permanently(user_id, app_index)
+        if success:
+            # Прибираємо зі списку deleted_apps
+            if 0 <= chosen_index < len(deleted_apps):
+                deleted_apps.pop(chosen_index)
+            await state.update_data(deleted_apps=deleted_apps, selected_deleted=None, chosen_deleted_index=None)
+
+            await message.answer("Заявку остаточно видалено з файлу та таблиць.", reply_markup=get_admin_requests_menu())
+        else:
+            await message.answer("Помилка: Заявка не знайдена або вже була видалена.", reply_markup=get_admin_requests_menu())
+
+        await AdminMenuStates.requests_section.set()
+
+    else:
+        await message.answer("Оберіть «Видалити назавжди» або «Назад».")
+
+############################################
+# ОБРОБНИК /start (РЕЄСТРАЦІЯ КОРИСТУВАЧА)
+############################################
+
+@dp.message_handler(commands=["start"], state="*")
+async def cmd_start(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    await state.finish()  # обнуляємо будь-які попередні стани
+    users = load_users()
+    uid = str(user_id)
+
+    # Перевірка, чи користувач заблокований
+    if uid in users.get("blocked_users", []):
+        await message.answer("На жаль, у Вас немає доступу.", reply_markup=remove_keyboard())
+        return
+
+    # Якщо користувач уже схвалений
+    if uid in users.get("approved_users", {}):
+        await message.answer("Вітаємо! Оберіть дію:", reply_markup=get_main_menu_keyboard())
+        return
+
+    # Якщо вже є в 'pending_users'
+    if uid in users.get("pending_users", {}):
+        await message.answer("Ваша заявка на модерацію вже відправлена. Очікуйте.", reply_markup=remove_keyboard())
+        return
+
+    # Якщо не заблокований, не схвалений, не очікує — запитуємо ПІБ
+    await message.answer("Введіть, будь ласка, своє ПІБ (повністю).", reply_markup=remove_keyboard())
+    await RegistrationStates.waiting_for_fullname.set()
+
+@dp.message_handler(state=RegistrationStates.waiting_for_fullname)
+async def process_fullname(message: types.Message, state: FSMContext):
+    fullname = message.text.strip()
+    if not fullname:
+        await message.answer("ПІБ не може бути порожнім. Введіть коректне значення.")
+        return
+    await state.update_data(fullname=fullname)
+
+    # Пропонуємо ввести номер телефону або поділитись контактом
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    keyboard.add(types.KeyboardButton("Поділитись контактом", request_contact=True))
+    await message.answer("Введіть номер телефону (+380XXXXXXXXX) або поділіться контактом:", reply_markup=keyboard)
+    await RegistrationStates.waiting_for_phone.set()
+
+@dp.message_handler(content_types=types.ContentType.CONTACT, state=RegistrationStates.waiting_for_phone)
+async def process_phone_contact(message: types.Message, state: FSMContext):
+    phone = message.contact.phone_number if message.contact and message.contact.phone_number else ""
+    phone = re.sub(r"[^\d+]", "", phone)
+    await state.update_data(phone=phone)
+    await show_registration_preview(message, state)
+
+@dp.message_handler(state=RegistrationStates.waiting_for_phone)
+async def process_phone_text(message: types.Message, state: FSMContext):
+    phone = re.sub(r"[^\d+]", "", message.text.strip())
+    if not re.fullmatch(r"\+380\d{9}", phone):
+        await message.answer("Невірний формат. Введіть номер у форматі +380XXXXXXXXX")
+        return
+    await state.update_data(phone=phone)
+    await show_registration_preview(message, state)
+
+async def show_registration_preview(message: types.Message, state: FSMContext):
+    """
+    Показує користувачеві короткий огляд (ПІБ та телефон),
+    та надає 3 кнопки: Підтвердити, Редагувати, Скасувати.
+    """
+    data = await state.get_data()
+    fullname = data.get("fullname", "—")
+    phone = data.get("phone", "—")
+
+    preview_text = (
+        "<b>Перевірте свої дані:</b>\n\n"
+        f"ПІБ: {fullname}\n"
+        f"Телефон: {phone}\n\n"
+        "Якщо все вірно, натисніть <b>Підтвердити</b>."
+    )
+
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.row("Підтвердити", "Редагувати", "Скасувати")
+
+    await message.answer(preview_text, parse_mode="HTML", reply_markup=kb)
+    await RegistrationStates.preview.set()
+
+@dp.message_handler(Text(equals="Підтвердити"), state=RegistrationStates.preview)
+async def confirm_registration_preview(message: types.Message, state: FSMContext):
+    """
+    Якщо користувач тисне «Підтвердити» на екрані попереднього перегляду,
+    ми зберігаємо його у pending_users та надсилаємо адмінам повідомлення.
+    """
+    data = await state.get_data()
+    fullname = data.get("fullname")
+    phone = data.get("phone")
+    user_id = message.from_user.id
+    uid = str(user_id)
+
+    users = load_users()
+    users.setdefault("pending_users", {})[uid] = {
+        "fullname": fullname,
+        "phone": phone,
+        "timestamp": datetime.now().isoformat()
+    }
+    save_users(users)
+
+    await state.finish()
+    await message.answer("Ваша заявка на модерацію відправлена.", reply_markup=remove_keyboard())
+
+    for admin in ADMINS:
+        try:
+            await bot.send_message(
+                admin,
+                f"Новий користувач на модерацію:\nПІБ: {fullname}\nНомер: {phone}\nUser ID: {user_id}",
+                reply_markup=remove_keyboard()
+            )
+        except Exception as e:
+            logging.exception(f"Не вдалося сповістити адміністратора {admin}: {e}")
+
+@dp.message_handler(Text(equals="Редагувати"), state=RegistrationStates.preview)
+async def edit_registration_preview(message: types.Message, state: FSMContext):
+    """
+    Якщо користувач тисне «Редагувати» на екрані попереднього перегляду,
+    показуємо меню з кнопками «Змінити ПІБ», «Змінити номер телефону», «Назад».
+    """
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.row("Змінити ПІБ", "Змінити номер телефону")
+    kb.add("Назад")
+    await message.answer("Оберіть, що змінити:", reply_markup=kb)
+    await RegistrationStates.editing.set()
+
+@dp.message_handler(Text(equals="Скасувати"), state=RegistrationStates.preview)
+async def cancel_registration_preview(message: types.Message, state: FSMContext):
+    """
+    Якщо користувач тисне «Скасувати» на екрані попереднього перегляду,
+    просто завершуємо реєстрацію (не зберігаємо дані).
+    """
+    await state.finish()
+    await message.answer("Реєстрацію скасовано. Якщо передумаєте – введіть /start заново.",
+                         reply_markup=remove_keyboard())
+
+#
+# Меню редагування реєстрації
+#
+
+@dp.message_handler(Text(equals="Змінити ПІБ"), state=RegistrationStates.editing)
+async def editing_fullname_button(message: types.Message, state: FSMContext):
+    """
+    Запит нового ПІБ
+    """
+    await message.answer("Введіть нове ПІБ:", reply_markup=remove_keyboard())
+    await RegistrationStates.editing_fullname.set()
+
+@dp.message_handler(state=RegistrationStates.editing_fullname)
+async def process_editing_fullname(message: types.Message, state: FSMContext):
+    new_fullname = message.text.strip()
+    if not new_fullname:
+        await message.answer("ПІБ не може бути порожнім.")
+        return
+    await state.update_data(fullname=new_fullname)
+    await return_to_editing_menu(message, state)
+
+@dp.message_handler(Text(equals="Змінити номер телефону"), state=RegistrationStates.editing)
+async def editing_phone_button(message: types.Message, state: FSMContext):
+    """
+    Запит нового номера телефону
+    """
+    await message.answer("Введіть новий номер телефону (+380XXXXXXXXX):", reply_markup=remove_keyboard())
+    await RegistrationStates.editing_phone.set()
+
+@dp.message_handler(state=RegistrationStates.editing_phone)
+async def process_editing_phone(message: types.Message, state: FSMContext):
+    phone = re.sub(r"[^\d+]", "", message.text.strip())
+    if not re.fullmatch(r"\+380\d{9}", phone):
+        await message.answer("Невірний формат. Введіть номер у форматі +380XXXXXXXXX")
+        return
+    await state.update_data(phone=phone)
+    await return_to_editing_menu(message, state)
+
+@dp.message_handler(Text(equals="Назад"), state=RegistrationStates.editing)
+async def back_to_preview_from_editing(message: types.Message, state: FSMContext):
+    """
+    Повертаємося з меню редагування (Змінити ПІБ/Змінити телефон) назад до екрану
+    попереднього перегляду (ПІБ + телефон).
+    """
+    await show_registration_preview(message, state)
+
+async def return_to_editing_menu(message: types.Message, state: FSMContext):
+    """
+    Повернення користувача назад у меню редагування (Редагувати ПІБ / телефон).
+    """
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.row("Змінити ПІБ", "Змінити номер телефону")
+    kb.add("Назад")
+    await RegistrationStates.editing.set()
+    await message.answer("Оновлено! Що бажаєте змінити далі?", reply_markup=kb)
+
+############################################
+# /menu (Показ головного меню користувача)
+############################################
+
+@dp.message_handler(commands=["menu"], state="*")
+async def show_menu(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    users = load_users()
+    uid = str(user_id)
+    if uid not in users.get("approved_users", {}):
+        await message.answer("Немає доступу. Очікуйте схвалення.", reply_markup=remove_keyboard())
+        return
+    await state.finish()
+    await message.answer("Головне меню:", reply_markup=get_main_menu_keyboard())
+
+############################################
+# Подати заявку / Переглянути мої заявки
 ############################################
 
 @dp.message_handler(Text(equals="Подати заявку"), state="*")
@@ -974,10 +1206,6 @@ async def start_application(message: types.Message, state: FSMContext):
     kb.row("Скасувати")
     await message.answer("Заповніть дані заявки у WebApp:", reply_markup=kb)
     await ApplicationStates.waiting_for_webapp_data.set()
-
-############################################
-# ПЕРЕГЛЯД МОЇХ ЗАЯВОК
-############################################
 
 @dp.message_handler(Text(equals="Переглянути мої заявки"), state="*")
 async def show_user_applications(message: types.Message):
@@ -996,7 +1224,6 @@ async def show_user_applications(message: types.Message):
         quantity = app.get('quantity', 'Невідомо')
         status = app.get("proposal_status", "")
         if status == "confirmed":
-            # Додаємо смайлик ✅
             btn_text = f"{i}. {culture} | {quantity} т ✅"
         else:
             btn_text = f"{i}. {culture} | {quantity} т"
@@ -1016,7 +1243,7 @@ async def show_user_applications(message: types.Message):
     await message.answer("Ваші заявки:", reply_markup=kb)
 
 ############################################
-# ДЕТАЛЬНИЙ ПЕРЕГЛЯД ЗАЯВКИ
+# ОБРОБКА КНОПОК У СПИСКУ «МОЇ ЗАЯВКИ»
 ############################################
 
 @dp.message_handler(Regexp(r"^(\d+)\.\s(.+)\s\|\s(.+)\sт(?:\s✅)?$"), state="*")
@@ -1048,8 +1275,8 @@ async def view_application_detail(message: types.Message, state: FSMContext):
 
     status = app.get("proposal_status", "")
 
-    # Якщо confirmed — показуємо інший текст
     if status == "confirmed":
+        # Якщо confirmed
         details = [
             "<b>Детальна інформація по заявці:</b>",
             f"Дата створення: {formatted_date}",
@@ -1082,7 +1309,7 @@ async def view_application_detail(message: types.Message, state: FSMContext):
         await ApplicationStates.viewing_application.set()
         return
 
-    # Інакше логіка як раніше
+    # Інакше звичайний перегляд
     details = [
         "<b>Детальна інформація по заявці:</b>",
         f"Дата створення: {formatted_date}",
@@ -1106,6 +1333,7 @@ async def view_application_detail(message: types.Message, state: FSMContext):
             details.append(f"{friendly_names.get(key, key.capitalize())}: {value}")
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+
     if status == "Agreed":
         once_waited = app.get("onceWaited", False)
         details.append(f"\nПропозиція ціни: {app.get('proposal', '')}")
@@ -1119,14 +1347,18 @@ async def view_application_detail(message: types.Message, state: FSMContext):
         kb.add("Переглянути пропозицію")
     elif status == "rejected":
         kb.row("Видалити", "Очікувати")
+    elif status == "deleted":
+        details.append("\nЦя заявка вже позначена як 'deleted' (видалена).")
+        kb.add("Назад")
 
     kb.add("Назад")
+
     await state.update_data(selected_app_index=idx)
     await message.answer("\n".join(details), reply_markup=kb, parse_mode="HTML")
     await ApplicationStates.viewing_application.set()
 
 ############################################
-# ПЕРЕГЛЯНУТИ ПРОПОЗИЦІЮ
+# КНОПКА "ПЕРЕГЛЯНУТИ ПРОПОЗИЦІЮ"
 ############################################
 
 @dp.message_handler(Text(equals="Переглянути пропозицію"), state=ApplicationStates.viewing_application)
@@ -1166,7 +1398,7 @@ async def view_proposal(message: types.Message, state: FSMContext):
         await message.answer("Немає актуальної пропозиції.", reply_markup=kb)
 
 ############################################
-# ВІДХИЛИТИ ПРОПОЗИЦІЮ
+# КНОПКА "ВІДХИЛИТИ"
 ############################################
 
 @dp.message_handler(Text(equals="Відхилити"), state=ApplicationStates.viewing_application)
@@ -1184,7 +1416,8 @@ async def proposal_rejected(message: types.Message, state: FSMContext):
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("Видалити", "Очікувати")
-    await message.answer("Пропозицію відхилено. Оберіть: Видалити заявку або Очікувати кращу пропозицію?", reply_markup=kb)
+    await message.answer("Пропозицію відхилено. Оберіть: Видалити заявку або Очікувати кращу пропозицію?",
+                         reply_markup=kb)
     await ApplicationStates.proposal_reply.set()
 
 @dp.message_handler(Text(equals="Очікувати"), state=ApplicationStates.proposal_reply)
@@ -1222,15 +1455,15 @@ async def delete_after_rejection(message: types.Message, state: FSMContext):
     app = user_apps[index]
     sheet_row = app.get("sheet_row")
     if sheet_row:
-        # Зафарбуємо клітинку в table2 (стовпець L) у червоний і рядок у таблиці1
-        # та встановимо статус "deleted"
-        delete_application(message.from_user.id, index)
+        color_cell_red(sheet_row)
 
-    await message.answer("Ваша заявка видалена (позначена як deleted).", reply_markup=get_main_menu_keyboard())
+    # Звичайний «м'який» видалити (для користувача)
+    delete_application_soft(message.from_user.id, index)
+    await message.answer("Ваша заявка видалена (позначена як 'deleted').", reply_markup=get_main_menu_keyboard())
     await state.finish()
 
 ############################################
-# ПІДТВЕРДИТИ ПРОПОЗИЦІЮ (CONFIRMED)
+# КНОПКА "ПІДТВЕРДИТИ" (CONFIRM -> confirmed)
 ############################################
 
 @dp.message_handler(Text(equals="Підтвердити"), state=ApplicationStates.viewing_application)
@@ -1312,7 +1545,7 @@ async def confirm_proposal(message: types.Message, state: FSMContext):
     await state.finish()
 
 ############################################
-# ВИДАЛИТИ ЗАЯВКУ (КНОПКА ПІД ЧАС ПЕРЕГЛЯДУ)
+# ВИДАЛЕННЯ (КОРИСТУВАЧЕМ)
 ############################################
 
 @dp.message_handler(Text(equals="Видалити"), state=ApplicationStates.viewing_application)
@@ -1335,10 +1568,15 @@ async def confirm_deletion(message: types.Message, state: FSMContext):
         await state.finish()
         return
 
-    # Замість повного видалення з JSON => позначимо 'deleted' + зафарбуємо
-    delete_application(message.from_user.id, index)
+    app = user_apps[index]
+    sheet_row = app.get("sheet_row")
+    if sheet_row:
+        color_cell_red(sheet_row)
 
-    await message.answer("Ваша заявка видалена (позначена як deleted).", reply_markup=get_main_menu_keyboard())
+    # «М'яке» видалення (додаємо статус deleted)
+    delete_application_soft(message.from_user.id, index)
+
+    await message.answer("Ваша заявка видалена (позначена як 'deleted').", reply_markup=get_main_menu_keyboard())
     await state.finish()
 
 @dp.message_handler(Text(equals="Ні"), state=ApplicationStates.confirm_deletion)
@@ -1346,16 +1584,144 @@ async def cancel_deletion(message: types.Message, state: FSMContext):
     await ApplicationStates.viewing_application.set()
     await message.answer("Видалення скасовано.", reply_markup=get_main_menu_keyboard())
 
+############################################
+# КНОПКА «Назад» ГЛОБАЛЬНА (крім AdminReview)
+############################################
+
 @dp.message_handler(Text(equals="Назад"), state="*")
 async def go_to_main_menu(message: types.Message, state: FSMContext):
+    """
+    Якщо користувач тисне «Назад» у будь-якому стані (крім деяких станів AdminReview),
+    завершуємо стан і показуємо головне меню (для звичайного користувача).
+    Якщо ми перебуваємо в AdminMenuStates, «Назад» обробляється у відповідних хендлерах.
+    """
     current_state = await state.get_state()
-    if current_state and current_state.startswith("AdminReview"):
+
+    # Якщо в AdminReview, логіка «Назад» уже описана там
+    if current_state and current_state.startswith("AdminReview:"):
         return
+
+    # Якщо в AdminMenuStates, логіку «Назад» ми теж обробляємо зверху
+    if current_state and current_state.startswith("AdminMenuStates:"):
+        return
+
     await state.finish()
     await message.answer("Головне меню:", reply_markup=get_main_menu_keyboard())
 
 ############################################
-# КНОПКА "ПІДТВЕРДИТИ" ПІСЛЯ WEBAPP
+# ОБРОБНИК ДАНИХ ІЗ WEBAPP (ПРОЦЕС ПОДАННЯ ЗАЯВКИ)
+############################################
+
+@dp.message_handler(lambda message: message.text and "/webapp_data" in message.text, state=ApplicationStates.waiting_for_webapp_data)
+async def webapp_data_handler_text(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    try:
+        prefix = "/webapp_data "
+        data_str = (
+            message.text[len(prefix):].strip()
+            if message.text.startswith(prefix)
+            else message.text.split("/webapp_data", 1)[-1].strip()
+        )
+        data_dict = json.loads(data_str)
+        await state.update_data(webapp_data=data_dict)
+        current_data = await state.get_data()
+        sheet_row = current_data.get("sheet_row")
+        edit_index = current_data.get("edit_index")
+        await process_webapp_data_direct(user_id, data_dict, edit_index, sheet_row)
+    except Exception as e:
+        logging.exception(f"Помилка обробки даних для user_id={user_id}: {e}")
+        await bot.send_message(user_id, "Помилка обробки даних. Спробуйте ще раз.", reply_markup=remove_keyboard())
+
+@dp.message_handler(content_types=types.ContentType.WEB_APP_DATA, state=ApplicationStates.waiting_for_webapp_data)
+async def webapp_data_handler_web_app(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    try:
+        data_str = message.web_app_data.data
+        data_dict = json.loads(data_str)
+        await state.update_data(webapp_data=data_dict)
+        current_data = await state.get_data()
+        sheet_row = current_data.get("sheet_row")
+        edit_index = current_data.get("edit_index")
+        await process_webapp_data_direct(user_id, data_dict, edit_index, sheet_row)
+    except Exception as e:
+        logging.exception(f"Помилка WEB_APP_DATA для user_id={user_id}: {e}")
+        await bot.send_message(user_id, "Помилка обробки даних. Спробуйте ще раз.", reply_markup=remove_keyboard())
+
+async def process_webapp_data_direct(user_id: int, data: dict, edit_index: int = None, sheet_row: int = None):
+    if not data or not any(data.values()):
+        logging.warning("Отримано порожні дані, повідомлення не надсилається.")
+        return
+
+    message_lines = [
+        "<b>Перевірте заявку:</b>",
+        f"ФГ: {data.get('fgh_name', '')}",
+        f"ЄДРПОУ: {data.get('edrpou', '')}",
+        f"Область: {data.get('region', '')}",
+        f"Район: {data.get('district', '')}",
+        f"Місто: {data.get('city', '')}",
+        f"Група: {data.get('group', '')}",
+        f"Культура: {data.get('culture', '')}"
+    ]
+    extra = data.get("extra_fields", {})
+    if extra:
+        message_lines.append("Додаткові параметри:")
+        for key, value in extra.items():
+            ukr_name = friendly_names.get(key, key.capitalize())
+            message_lines.append(f"{ukr_name}: {value}")
+
+    message_lines.extend([
+        f"Кількість: {data.get('quantity', '')} т",
+        f"Форма оплати: {data.get('payment_form', '')}",
+        f"Валюта: {data.get('currency', '')}",
+        f"Ціна: {data.get('price', '')}"
+    ])
+
+    preview_text = "\n".join(message_lines)
+    reply_kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    reply_kb.add("Підтвердити", "Редагувати", "Скасувати")
+
+    await bot.send_message(user_id, preview_text, reply_markup=reply_kb)
+
+    # Переводимо користувача у відповідний стан
+    state = dp.current_state(chat=user_id, user=user_id)
+    if edit_index is not None and sheet_row is not None:
+        await state.update_data(edit_index=edit_index, sheet_row=sheet_row, webapp_data=data)
+        await state.set_state(ApplicationStates.editing_application.state)
+    else:
+        await state.update_data(webapp_data=data)
+        await state.set_state(ApplicationStates.confirm_application.state)
+
+@dp.message_handler(Text(equals="Редагувати"), state=[ApplicationStates.confirm_application, ApplicationStates.editing_application])
+async def edit_application_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    webapp_data = data.get("webapp_data")
+    if not webapp_data:
+        await message.answer("Немає даних для редагування.", reply_markup=get_main_menu_keyboard())
+        await state.finish()
+        return
+
+    webapp_url = "https://danza13.github.io/agro-webapp/webapp.html"
+    from urllib.parse import quote
+    prefill = quote(json.dumps(webapp_data))
+    url_with_data = f"{webapp_url}?data={prefill}"
+
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add(types.KeyboardButton("Відкрити WebApp для редагування", web_app=types.WebAppInfo(url=url_with_data)))
+    kb.row("Скасувати")
+    await message.answer("Редагуйте заявку у WebApp:", reply_markup=kb)
+    await state.set_state(ApplicationStates.waiting_for_webapp_data.state)
+
+@dp.message_handler(Text(equals="Скасувати"), state=[
+    ApplicationStates.waiting_for_webapp_data,
+    ApplicationStates.confirm_application,
+    ApplicationStates.editing_application
+])
+async def cancel_process_reply(message: types.Message, state: FSMContext):
+    await state.finish()
+    await message.answer("Процес скасовано. Головне меню:", reply_markup=get_main_menu_keyboard())
+
+############################################
+# ПІДТВЕРДЖЕННЯ ЗАЯВКИ КОРИСТУВАЧЕМ (ПІСЛЯ WEBAPP)
 ############################################
 
 @dp.message_handler(Text(equals="Підтвердити"), state=ApplicationStates.confirm_application)
@@ -1370,6 +1736,7 @@ async def confirm_application_handler(message: types.Message, state: FSMContext)
         await state.finish()
         return
 
+    # Якщо в webapp_data немає fullname, підтягуємо його з approved_users (або залишимо порожнім)
     if "fullname" not in webapp_data or not webapp_data.get("fullname"):
         users = load_users()
         approved_user_info = users.get("approved_users", {}).get(str(user_id), {})
@@ -1395,7 +1762,13 @@ async def confirm_application_handler(message: types.Message, state: FSMContext)
 ############################################
 
 async def poll_manager_proposals():
+    global POLLING_PAUSED
     while True:
+        if POLLING_PAUSED:
+            # Якщо пауза, чекаємо декілька секунд і перевіряємо знову
+            await asyncio.sleep(3)
+            continue
+
         try:
             ws = get_worksheet1()
             rows = ws.get_all_values()
@@ -1415,6 +1788,10 @@ async def poll_manager_proposals():
                     for idx, app in enumerate(app_list, start=1):
                         if app.get("sheet_row") == i:
                             status = app.get("proposal_status", "active")
+                            if status in ("deleted", "confirmed"):
+                                # Якщо вже видалено або підтверджено — ігноруємо
+                                continue
+
                             original_manager_price_str = app.get("original_manager_price", "").strip()
                             try:
                                 orig_price = float(original_manager_price_str) if original_manager_price_str else None
@@ -1422,6 +1799,7 @@ async def poll_manager_proposals():
                                 orig_price = None
 
                             if orig_price is None:
+                                # Перша поява ціни
                                 culture = app.get("culture", "Невідомо")
                                 quantity = app.get("quantity", "Невідомо")
                                 app["original_manager_price"] = current_manager_price_str
