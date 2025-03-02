@@ -702,23 +702,22 @@ async def admin_moderation_section_handler(message: types.Message, state: FSMCon
             return
 
         # Відображаємо схвалених по 2 в рядку
+        approved_dict = {}
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         row = []
-        approved_items = list(approved.items())  # [(uid, {fullname, phone}), ...]
-        for i, (u_id, info) in enumerate(approved_items, start=1):
-            fname = info.get("fullname", f"ID:{u_id}")
-            btn_text = f"{fname}"
-            row.append(btn_text)
+        for u_id, info in approved.items():
+            name = info.get("fullname", f"ID:{u_id}")
+            approved_dict[name] = u_id  # Зберігаємо зіставлення ім'я -> ID
+            row.append(name)
             if len(row) == 2:
                 kb.row(*row)
                 row = []
         if row:
             kb.row(*row)
         kb.add("Вивантажити базу", "Назад")
-
+        await state.update_data(approved_dict=approved_dict, from_moderation_menu=True)
         await message.answer("Список схвалених користувачів (по два в рядку):", reply_markup=kb)
         await AdminReview.viewing_approved_list.set()
-        await state.update_data(approved_dict=approved, from_moderation_menu=True)
 
     elif text == "Назад":
         # Повертаємось у головне меню адміна
@@ -834,8 +833,8 @@ async def admin_decision_pending_user(message: types.Message, state: FSMContext)
 @dp.message_handler(state=AdminReview.viewing_approved_list)
 async def admin_view_approved_users(message: types.Message, state: FSMContext):
     """
-    Стан для перегляду списку схвалених користувачів 
-    (approved_dict).
+    Стан для перегляду списку схвалених користувачів (approved_dict),
+    де на кнопках показується лише ім'я користувача.
     """
     text = message.text.strip()
     data = await state.get_data()
@@ -851,37 +850,34 @@ async def admin_view_approved_users(message: types.Message, state: FSMContext):
             await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
         return
 
-    # Кнопка виглядає як "ПІБ | user_id"
-    if "|" not in text:
+    # Тепер очікуємо, що текст відповідає ключу (ім'ю користувача) зі словника approved_dict
+    if text not in approved_dict:
         await message.answer("Оберіть користувача зі списку або натисніть «Назад».")
         return
 
-    parts = text.split("|")
-    if len(parts) < 2:
-        await message.answer("Невірний формат. Спробуйте знову або «Назад».")
+    user_id = approved_dict[text]
+    users_data = load_users()
+    approved_users = users_data.get("approved_users", {})
+
+    if str(user_id) not in approved_users:
+        await message.answer("Користувача не знайдено серед схвалених.")
         return
 
-    user_id_str = parts[-1].strip()
-    if user_id_str not in approved_dict:
-        await message.answer("Користувача з таким ID не знайдено серед схвалених.")
-        return
-
-    info = approved_dict[user_id_str]
+    info = approved_users[str(user_id)]
     fullname = info.get("fullname", "—")
     phone = info.get("phone", "—")
 
-    # Деталі схваленого користувача
     details = (
         f"ПІБ: {fullname}\n"
         f"Номер телефону: {phone}\n"
-        f"Телеграм ID: {user_id_str}"
+        f"Телеграм ID: {user_id}"
     )
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.row("Редагувати", "Видалити")
     kb.add("Вивантажити базу", "Назад")
 
-    await state.update_data(selected_approved_user_id=user_id_str)
+    await state.update_data(selected_approved_user_id=str(user_id))
     await AdminReview.viewing_approved_user.set()
     await message.answer(details, reply_markup=kb)
 
