@@ -382,6 +382,14 @@ def delete_price_cell_in_table2(row: int, col: int = 12):
     last_row_to_clear = len(col_values) + 1
     ws2.update_cell(last_row_to_clear, col, "")
     
+from gspread_formatting import (
+    format_cell_range,
+    CellFormat,
+    TextFormat,
+    Alignment,
+    set_column_width
+)
+
 def export_database():
     """
     Створює новий лист у таблиці 1 з назвою "База дд.мм"
@@ -389,53 +397,69 @@ def export_database():
       A: Телеграм‑ID
       B: ПІБ
       C: Номер телефону
-      D: Остання заявка (дата в форматі дд.мм.рррр, alt+enter, час в форматі гг:хв)
+      D: Остання заявка (дата у форматі дд.мм.рррр, alt+enter, час у форматі гг:хв)
       E: Загальна кількість заявок
+    Використовуємо один виклик update() для завантаження всієї матриці даних,
+    а потім застосовуємо форматування:
+      - Вирівнювання по центру (горизонтально та вертикально)
+      - Жирний шрифт для всього тексту
+      - Автоматичне встановлення ширини стовпців на основі максимального вмісту
     """
-    # Завантажуємо дані користувачів та заявок
+    # Завантаження даних
     users_data = load_users()
     approved = users_data.get("approved_users", {})
     apps = load_applications()
-    
-    # Ініціалізуємо gspread та відкриваємо таблицю 1
+
+    # Отримуємо доступ до таблиці 1
     client = init_gspread()
     sheet = client.open_by_key(GOOGLE_SPREADSHEET_ID)
-    
-    # Форматуємо поточну дату для назви листа (наприклад, "База 13.02")
+
+    # Форматуємо назву листа за поточною датою (наприклад, "База 13.02")
     today = datetime.now().strftime("%d.%m")
     new_title = f"База {today}"
-    # Створюємо новий worksheet; припустимо 1000 рядків і 5 стовпців
     new_ws = sheet.add_worksheet(title=new_title, rows="1000", cols="5")
-    
-    # Записуємо заголовки в 1-й рядок
+
+    # Формуємо матрицю даних: перший рядок — заголовки, решта — дані користувачів
     headers = ["ID", "ПІБ", "Номер телефону", "Остання заявка", "Загальна кількість заявок"]
-    for col, header in enumerate(headers, start=1):
-        new_ws.update_cell(1, col, header)
-    
-    # Записуємо дані по кожному схваленому користувачу, починаючи з 2-го рядка
-    row_index = 2
+    data_matrix = [headers]
+
     for uid, info in approved.items():
-        # Отримуємо заявки для даного користувача
         user_apps = apps.get(uid, [])
         count_apps = len(user_apps)
         last_timestamp = ""
         if count_apps > 0:
-            # Знаходимо останню заявку за timestamp
             last_app = max(user_apps, key=lambda a: a.get("timestamp", ""))
             ts = last_app.get("timestamp", "")
             try:
                 dt = datetime.fromisoformat(ts)
-                # Форматуємо дату як "дд.мм.рррр" та час як "гг:хв"
                 last_timestamp = dt.strftime("%d.%m.%Y\n%H:%M")
             except Exception:
                 last_timestamp = ts
-        
-        new_ws.update_cell(row_index, 1, uid)
-        new_ws.update_cell(row_index, 2, info.get("fullname", ""))
-        new_ws.update_cell(row_index, 3, info.get("phone", ""))
-        new_ws.update_cell(row_index, 4, last_timestamp)
-        new_ws.update_cell(row_index, 5, count_apps)
-        row_index += 1
+        row = [uid, info.get("fullname", ""), info.get("phone", ""), last_timestamp, count_apps]
+        data_matrix.append(row)
+
+    # Batch update всіх клітинок матриці даних
+    end_row = len(data_matrix)
+    cell_range = f"A1:E{end_row}"
+    new_ws.update(cell_range, data_matrix, value_input_option="USER_ENTERED")
+
+    # Створюємо форматування: відцентровування і жирний шрифт
+    cell_format = CellFormat(
+        horizontalAlignment='CENTER',
+        verticalAlignment='MIDDLE',
+        textFormat=TextFormat(bold=True)
+    )
+    # Форматуємо весь діапазон
+    format_cell_range(new_ws, cell_range, cell_format)
+
+    # Автоматичне встановлення ширини стовпців
+    # Обчислюємо максимальну довжину тексту для кожного стовпця
+    num_cols = 5
+    for col in range(1, num_cols + 1):
+        max_len = max(len(str(row[col-1])) for row in data_matrix)
+        # Прийнято, що приблизно 10 пікселів на символ (це можна коригувати)
+        width = max_len * 10
+        set_column_width(new_ws, col, width)
 
 @dp.message_handler(Text(equals="Вивантажити базу"), state=AdminReview.viewing_approved_list)
 async def handle_export_database(message: types.Message, state: FSMContext):
