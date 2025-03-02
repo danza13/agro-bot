@@ -20,15 +20,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiohttp import web
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-
-# бібліотека для форматування клітинок
-from gspread_formatting import (
-    format_cell_range,
-    cellFormat,
-    Color,
-    set_frozen,
-    set_column_width
-)
+from gspread_formatting import format_cell_range, cellFormat, Color
 from gspread.utils import rowcol_to_a1
 
 ############################################
@@ -133,17 +125,12 @@ CONFIG = {
     CONFIG = config_module.CONFIG
 
 ############################################
-# 5) ФОРМАТИ ФОНУ (ЧЕРВОНИЙ, ЗЕЛЕНИЙ, ЖОВТИЙ, ТА ДОДАЄМО #de0000)
+# 5) ФОРМАТИ ФОНУ (ЧЕРВОНИЙ, ЗЕЛЕНИЙ, ЖОВТИЙ)
 ############################################
-
-from gspread_formatting import cellFormat, Color
 
 red_format = cellFormat(backgroundColor=Color(1, 0.8, 0.8))
 green_format = cellFormat(backgroundColor=Color(0.8, 1, 0.8))
 yellow_format = cellFormat(backgroundColor=Color(1, 1, 0.8))
-
-# Червоний колір "#de0000" у десяткових частках (222 / 255 ~ 0.8705882353)
-deep_red_format = cellFormat(backgroundColor=Color(0.8705882353, 0.0, 0.0))
 
 ############################################
 # 6) ДОДАТКОВІ ПОЛЯ У FRIENDLY-ФОРМАТ
@@ -233,15 +220,7 @@ def save_applications(apps):
     with open(APPLICATIONS_FILE, "w", encoding="utf-8") as f:
         json.dump(apps, f, indent=2, ensure_ascii=False)
 
-############################################
-# ДОДАЄМО/ОНОВЛЮЄМО ЗАЯВКУ
-############################################
-
 def add_application(user_id, chat_id, application_data):
-    """
-    Зберігає нову заявку до локального JSON, встановлюючи початковий статус active.
-    """
-    from datetime import datetime
     application_data['timestamp'] = datetime.now().isoformat()
     application_data['user_id'] = user_id
     application_data['chat_id'] = chat_id
@@ -254,21 +233,8 @@ def add_application(user_id, chat_id, application_data):
     save_applications(apps)
     logging.info(f"Заявка для user_id={user_id} збережена як active.")
 
-def update_application_status(user_id, app_index, status, proposal=None):
-    """
-    Оновлює статус заявки (наприклад, на Agreed, confirmed, waiting, deleted і т.ін.).
-    За потреби можна встановити нову пропозицію (proposal).
-    """
-    apps = load_applications()
-    uid = str(user_id)
-    if uid in apps and 0 <= app_index < len(apps[uid]):
-        apps[uid][app_index]["proposal_status"] = status
-        if proposal is not None:
-            apps[uid][app_index]["proposal"] = proposal
-        save_applications(apps)
-
 ############################################
-# БЛОКУВАННЯ/СХВАЛЕННЯ КОРИСТУВАЧІВ
+# ФУНКЦІЇ ДЛЯ АДМІНА: APPROVE І BLOCK
 ############################################
 
 def approve_user(user_id):
@@ -293,7 +259,54 @@ def block_user(user_id):
         logging.info(f"Користувач {uid} заблокований.")
 
 ############################################
-# ІНІЦІАЛІЗАЦІЯ GSPREAD
+# ОНОВЛЕННЯ СТАТУСУ ЗАЯВКИ
+############################################
+
+def update_application_status(user_id, app_index, status, proposal=None):
+    apps = load_applications()
+    uid = str(user_id)
+    if uid in apps and 0 <= app_index < len(apps[uid]):
+        apps[uid][app_index]["proposal_status"] = status
+        if proposal is not None:
+            apps[uid][app_index]["proposal"] = proposal
+        save_applications(apps)
+
+def delete_application(user_id, app_index):
+    apps = load_applications()
+    uid = str(user_id)
+    if uid in apps and 0 <= app_index < len(apps[uid]):
+        del apps[uid][app_index]
+        save_applications(apps)
+
+############################################
+# ФУНКЦІЯ ВИДАЛЕННЯ ПІДТВЕРДЖЕНОЇ ЗАЯВКИ
+############################################
+
+def delete_confirmed_application_entirely(user_id, app_index):
+    apps = load_applications()
+    uid = str(user_id)
+    if uid in apps and 0 <= app_index < len(apps[uid]):
+        app = apps[uid][app_index]
+        row_to_delete = app.get("sheet_row")
+        del apps[uid][app_index]
+
+        if row_to_delete:
+            try:
+                delete_price_cell_in_table2(row_to_delete, 12)
+                ws = get_worksheet1()
+                ws.delete_rows(row_to_delete)
+                for u, user_apps in apps.items():
+                    for a in user_apps:
+                        old_row = a.get("sheet_row", 0)
+                        if old_row and old_row > row_to_delete:
+                            a["sheet_row"] = old_row - 1
+            except Exception as e:
+                logging.exception(f"Помилка видалення рядка в Google Sheets: {e}")
+
+        save_applications(apps)
+
+############################################
+#  ІНІЦІАЛІЗАЦІЯ GSPREAD
 ############################################
 
 def init_gspread():
@@ -319,7 +332,7 @@ def get_worksheet2():
     return ws
 
 ############################################
-# ЗБЕРІГАННЯ ЗАЯВКИ У ТАБЛИЦЮ 1
+# ЗАПИС У ТАБЛИЦЮ 1
 ############################################
 
 def ensure_columns(ws, required_col: int):
@@ -327,51 +340,38 @@ def ensure_columns(ws, required_col: int):
         ws.resize(rows=ws.row_count, cols=required_col)
 
 def update_google_sheet(data: dict) -> int:
-    """
-    Додає заявку в кінець таблиці 1 (Лист1) і повертає номер нового рядка.
-    """
     ws = get_worksheet1()
     ensure_columns(ws, 52)
     col_a = ws.col_values(1)
     new_row = len(col_a) + 1
     request_number = new_row - 1
 
-    # 1-й стовпець: Номер заявки
     ws.update_cell(new_row, 1, request_number)
-    # 2-й стовпець: Дата (день.місяць)
     current_date = datetime.now().strftime("%d.%m")
     ws.update_cell(new_row, 2, current_date)
 
-    # 3-й стовпець: ПІБ у кілька рядків
     fullname = data.get("fullname", "")
     if isinstance(fullname, dict):
         fullname = fullname.get("fullname", "")
     fullname_lines = "\n".join(fullname.split())
     ws.update_cell(new_row, 3, fullname_lines)
 
-    # 4-й: ФГ
     ws.update_cell(new_row, 4, data.get("fgh_name", ""))
-    # 5-й: ЄДРПОУ
     ws.update_cell(new_row, 5, data.get("edrpou", ""))
-    # 6-й: Група
     ws.update_cell(new_row, 6, data.get("group", ""))
-    # 7-й: Культура
     ws.update_cell(new_row, 7, data.get("culture", ""))
 
-    # 8-й: Кількість (з позначкою т)
     quantity = data.get("quantity", "")
     if quantity:
         quantity = f"{quantity} Т"
     ws.update_cell(new_row, 8, quantity)
 
-    # 9-й: Область, район, місто
     region = data.get("region", "")
     district = data.get("district", "")
     city = data.get("city", "")
     location = f"Область: {region}\nРайон: {district}\nНас. пункт: {city}"
     ws.update_cell(new_row, 9, location)
 
-    # 10-й: Додаткові параметри
     extra = data.get("extra_fields", {})
     extra_lines = []
     for key, value in extra.items():
@@ -379,35 +379,30 @@ def update_google_sheet(data: dict) -> int:
         extra_lines.append(f"{ukr_name}: {value}")
     ws.update_cell(new_row, 10, "\n".join(extra_lines))
 
-    # 11-й: Форма оплати
     ws.update_cell(new_row, 11, data.get("payment_form", ""))
 
-    # 12-й: Валюта
     currency_map = {"dollar": "Долар $", "euro": "Євро €", "uah": "Грн ₴"}
     curr = data.get("currency", "").lower()
     ws.update_cell(new_row, 12, currency_map.get(curr, data.get("currency", "")))
 
-    # 13-й: Бажана ціна
     ws.update_cell(new_row, 13, data.get("price", ""))
-
-    # 15-й: manager_price
     ws.update_cell(new_row, 15, data.get("manager_price", ""))
-
-    # 16-й: Телефон
     ws.update_cell(new_row, 16, data.get("phone", ""))
 
-    # 52-й: user_id
     ws.update_cell(new_row, 52, data.get("user_id", ""))
 
     return new_row
 
 ############################################
-# ЗАФАРБОВУВАННЯ В ТАБЛИЦІ2 (СТОВПЧИК L = 12)
+# ЗАФАРБОВУВАННЯ КЛІТИНОК У ТАБЛИЦІ2
 ############################################
 
 def color_price_cell_in_table2(row: int, fmt: cellFormat, col: int = 12):
     ws2 = get_worksheet2()
     cell_range = f"{rowcol_to_a1(row, col)}:{rowcol_to_a1(row, col)}"
+    # Іноді можуть бути потрібні import'и: from gspread.utils import rowcol_to_a1
+    # Для акуратності:
+    cell_range = f"{gspread.utils.rowcol_to_a1(row, col)}:{gspread.utils.rowcol_to_a1(row, col)}"
     format_cell_range(ws2, cell_range, fmt)
 
 def color_cell_red(row: int):
@@ -419,27 +414,16 @@ def color_cell_green(row: int):
 def color_cell_yellow(row: int):
     color_price_cell_in_table2(row, yellow_format, 12)
 
-############################################
-# ДОДАТКОВІ ФУНКЦІЇ ФОРМАТУВАННЯ:
-# 1) ЗАФАРБУВАТИ ВЕСЬ РЯДОК У ТАБЛИЦІ1
-# 2) ЗАФАРБУВАТИ КЛІТИНКУ В ТАБЛИЦІ2 У #de0000
-############################################
-
-def color_entire_row_in_table1(row: int, fmt: cellFormat, max_columns: int = 52):
-    """
-    Зафарбовує весь рядок row (1-based index) у таблиці1 від колонки 1 до max_columns.
-    """
-    ws1 = get_worksheet1()
-    start_cell = rowcol_to_a1(row, 1)     # наприклад, A{row}
-    end_cell = rowcol_to_a1(row, max_columns)  # наприклад, AZ{row} якщо max_columns=52
-    cell_range = f"{start_cell}:{end_cell}"
-    format_cell_range(ws1, cell_range, fmt)
-
-def color_cell_in_table2_red(row: int, col: int = 12):
+def delete_price_cell_in_table2(row: int, col: int = 12):
     ws2 = get_worksheet2()
-    cell_range = f"{rowcol_to_a1(row, col)}:{rowcol_to_a1(row, col)}"
-    format_cell_range(ws2, cell_range, deep_red_format)
-
+    col_values = ws2.col_values(col)
+    if row - 1 >= len(col_values):
+        return
+    col_values.pop(row - 1)
+    for i in range(row - 1, len(col_values)):
+        ws2.update_cell(i + 1, col, col_values[i])
+    last_row_to_clear = len(col_values) + 1
+    ws2.update_cell(last_row_to_clear, col, "")
 
 ############################################
 # СТВОРЕННЯ КНОПОК
@@ -457,16 +441,10 @@ def get_admin_menu_keyboard():
     return kb
 
 ############################################
-# ОБРОБКА ДАНИХ ІЗ WEBAPP (JSON)
+# ОБРОБНИК ДАНИХ ІЗ WEBAPP
 ############################################
 
 async def process_webapp_data_direct(user_id: int, data: dict, edit_index: int = None, sheet_row: int = None):
-    """
-    Формує текст попереднього перегляду заявки і пропонує кнопки:
-    - Підтвердити
-    - Редагувати
-    - Скасувати
-    """
     if not data or not any(data.values()):
         logging.warning("Отримано порожні дані, повідомлення не надсилається.")
         return
@@ -498,16 +476,13 @@ async def process_webapp_data_direct(user_id: int, data: dict, edit_index: int =
     preview_text = "\n".join(message_lines)
     reply_kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     reply_kb.add("Підтвердити", "Редагувати", "Скасувати")
-
     await bot.send_message(user_id, preview_text, reply_markup=reply_kb)
 
     state = dp.current_state(chat=user_id, user=user_id)
     if edit_index is not None and sheet_row is not None:
-        # Якщо редагуємо існуючу заявку (edit_index) і є посилання на конкретний ряд (sheet_row)
         await state.update_data(edit_index=edit_index, sheet_row=sheet_row, webapp_data=data)
         await state.set_state(ApplicationStates.editing_application.state)
     else:
-        # Якщо це нова заявка
         await state.update_data(webapp_data=data)
         await state.set_state(ApplicationStates.confirm_application.state)
 
@@ -516,17 +491,12 @@ async def webapp_data_handler_text(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     try:
         prefix = "/webapp_data "
-        if message.text.startswith(prefix):
-            data_str = message.text[len(prefix):].strip()
-        else:
-            data_str = message.text.split("/webapp_data", 1)[-1].strip()
-
+        data_str = message.text[len(prefix):].strip() if message.text.startswith(prefix) else message.text.split("/webapp_data", 1)[-1].strip()
         data_dict = json.loads(data_str)
         await state.update_data(webapp_data=data_dict)
         current_data = await state.get_data()
         sheet_row = current_data.get("sheet_row")
         edit_index = current_data.get("edit_index")
-
         await process_webapp_data_direct(user_id, data_dict, edit_index, sheet_row)
     except Exception as e:
         logging.exception(f"Помилка обробки даних для user_id={user_id}: {e}")
@@ -542,7 +512,6 @@ async def webapp_data_handler_web_app(message: types.Message, state: FSMContext)
         current_data = await state.get_data()
         sheet_row = current_data.get("sheet_row")
         edit_index = current_data.get("edit_index")
-
         await process_webapp_data_direct(user_id, data_dict, edit_index, sheet_row)
     except Exception as e:
         logging.exception(f"Помилка WEB_APP_DATA для user_id={user_id}: {e}")
@@ -558,13 +527,13 @@ async def edit_application_handler(message: types.Message, state: FSMContext):
         return
 
     webapp_url = "https://danza13.github.io/agro-webapp/webapp.html"
+    from urllib.parse import quote
     prefill = quote(json.dumps(webapp_data))
     url_with_data = f"{webapp_url}?data={prefill}"
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton("Відкрити WebApp для редагування", web_app=types.WebAppInfo(url=url_with_data)))
     kb.row("Скасувати")
-
     await message.answer("Редагуйте заявку у WebApp:", reply_markup=kb)
     await state.set_state(ApplicationStates.waiting_for_webapp_data.state)
 
@@ -576,7 +545,7 @@ async def cancel_process_reply(message: types.Message, state: FSMContext):
     await message.answer("Процес скасовано. Головне меню:", reply_markup=get_main_menu_keyboard())
 
 ############################################
-# /start (Реєстрація користувача)
+# ОБРОБНИК /start (РЕЄСТРАЦІЯ КОРИСТУВАЧА)
 ############################################
 
 @dp.message_handler(commands=["start"], state="*")
@@ -869,7 +838,7 @@ async def admin_view_confirmed_list_choice(message: types.Message, state: FSMCon
         f"Форма оплати: <b>{app_data.get('payment_form', '')}</b>",
         f"Валюта: <b>{app_data.get('currency', '')}</b>",
         f"Бажана ціна: <b>{app_data.get('price', '')}</b>",
-        f"Пропозиція ціни: <b>{app_data.get('proposal', '')}</b>"
+        f"Пропозиція ціни: <b>{app_data.get('proposal', '')}</b>",
     ]
 
     extra = app_data.get("extra_fields", {})
@@ -913,12 +882,6 @@ async def admin_back_to_confirmed_list(message: types.Message, state: FSMContext
 
 @dp.message_handler(Text(equals="Видалити"), state=AdminReview.viewing_confirmed_app)
 async def admin_delete_confirmed_app(message: types.Message, state: FSMContext):
-    """
-    Адмін тисне "Видалити" підтверджену заявку:
-    - Ми не видаляємо з таблиці, а лише ставимо статус deleted.
-    - Зафарбовуємо весь рядок у таблиці1 в #de0000.
-    - Зафарбовуємо клітинку в таблиці2 (стовпець L) так само.
-    """
     data = await state.get_data()
     selected_entry = data.get("selected_confirmed")
     confirmed_apps = data.get("confirmed_apps", [])
@@ -931,31 +894,15 @@ async def admin_delete_confirmed_app(message: types.Message, state: FSMContext):
 
     user_id = int(selected_entry["user_id"])
     app_index = selected_entry["app_index"]
-    apps = load_applications()
-    uid = str(user_id)
+    delete_confirmed_application_entirely(user_id, app_index)
 
-    if uid in apps and 0 <= app_index < len(apps[uid]):
-        app = apps[uid][app_index]
-        # Оновлюємо статус
-        app["proposal_status"] = "deleted"
-        # Зафарбовуємо рядок у таблиці1
-        sheet_row = app.get("sheet_row")
-        if sheet_row:
-            color_entire_row_in_table1(sheet_row, deep_red_format, 52)
-            # Зафарбовуємо клітинку в таблиці2 (стовпець L = 12)
-            color_cell_in_table2_red(sheet_row, 12)
-
-        save_applications(apps)
-
-    # Прибираємо заявку з локального списку confirmed_apps у стані FSM
     if 0 <= chosen_index < len(confirmed_apps):
         confirmed_apps.pop(chosen_index)
 
     await state.update_data(confirmed_apps=confirmed_apps, selected_confirmed=None, chosen_confirmed_index=None)
 
     if not confirmed_apps:
-        await message.answer("Заявку позначено 'deleted'. Список підтверджених заявок тепер порожній.",
-                             reply_markup=get_admin_menu_keyboard())
+        await message.answer("Заявка видалена. Список підтверджених заявок тепер порожній.", reply_markup=get_admin_menu_keyboard())
         await state.finish()
     else:
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -973,7 +920,7 @@ async def admin_delete_confirmed_app(message: types.Message, state: FSMContext):
         kb.add("Назад")
 
         await AdminReview.viewing_confirmed_list.set()
-        await message.answer("Заявку позначено 'deleted'. Оновлений список:", reply_markup=kb)
+        await message.answer("Заявка видалена. Оновлений список:", reply_markup=kb)
 
 ############################################
 # ОБРОБНИК «ПОДАТИ ЗАЯВКУ»
@@ -990,7 +937,7 @@ async def start_application(message: types.Message, state: FSMContext):
     await ApplicationStates.waiting_for_webapp_data.set()
 
 ############################################
-# ПЕРЕГЛЯД "МОЇХ ЗАЯВОК"
+# ПЕРЕГЛЯД МОЇХ ЗАЯВОК
 ############################################
 
 @dp.message_handler(Text(equals="Переглянути мої заявки"), state="*")
@@ -1030,7 +977,7 @@ async def show_user_applications(message: types.Message):
     await message.answer("Ваші заявки:", reply_markup=kb)
 
 ############################################
-# ДЕТАЛЬНИЙ ПЕРЕГЛЯД КОНКРЕТНОЇ ЗАЯВКИ
+# ДЕТАЛЬНИЙ ПЕРЕГЛЯД ЗАЯВКИ
 ############################################
 
 @dp.message_handler(Regexp(r"^(\d+)\.\s(.+)\s\|\s(.+)\sт(?:\s✅)?$"), state="*")
@@ -1062,7 +1009,7 @@ async def view_application_detail(message: types.Message, state: FSMContext):
 
     status = app.get("proposal_status", "")
 
-    # Якщо заявка вже confirmed
+    # Якщо confirmed — показуємо інший текст
     if status == "confirmed":
         details = [
             "<b>Детальна інформація по заявці:</b>",
@@ -1096,7 +1043,7 @@ async def view_application_detail(message: types.Message, state: FSMContext):
         await ApplicationStates.viewing_application.set()
         return
 
-    # Якщо заявка має інші стани
+    # Інакше логіка як раніше
     details = [
         "<b>Детальна інформація по заявці:</b>",
         f"Дата створення: {formatted_date}",
@@ -1194,7 +1141,6 @@ async def proposal_rejected(message: types.Message, state: FSMContext):
     app = apps[uid][index]
     sheet_row = app.get("sheet_row")
     if sheet_row:
-        # Зафарбовуємо клітинку в табл.2 у червоний (м'який)
         color_cell_red(sheet_row)
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -1221,29 +1167,8 @@ async def wait_after_rejection(message: types.Message, state: FSMContext):
                          reply_markup=get_main_menu_keyboard())
     await state.finish()
 
-############################################
-# ВИДАЛЕННЯ ЗАЯВКИ (КОРИСТУВАЧЕМ)
-############################################
-
-@dp.message_handler(Text(equals="Видалити"), state=[ApplicationStates.viewing_application, ApplicationStates.proposal_reply])
-async def delete_request_user(message: types.Message, state: FSMContext):
-    """
-    Користувач обирає "Видалити" заявку.
-    Запитуємо підтвердження.
-    """
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add("Так", "Ні")
-    await message.answer("Ви впевнені, що хочете видалити заявку?", reply_markup=kb)
-    await ApplicationStates.confirm_deletion.set()
-
-@dp.message_handler(Text(equals="Так"), state=ApplicationStates.confirm_deletion)
-async def confirm_deletion(message: types.Message, state: FSMContext):
-    """
-    Остаточне видалення заявки:
-    - Ставимо `proposal_status = "deleted"`.
-    - Зафарбовуємо рядок у таблиці1 (#de0000).
-    - Зафарбовуємо клітинку стовпчика L (12) у таблиці2 (#de0000).
-    """
+@dp.message_handler(Text(equals="Видалити"), state=ApplicationStates.proposal_reply)
+async def delete_after_rejection(message: types.Message, state: FSMContext):
     data = await state.get_data()
     index = data.get("selected_app_index")
     uid = str(message.from_user.id)
@@ -1257,26 +1182,140 @@ async def confirm_deletion(message: types.Message, state: FSMContext):
 
     app = user_apps[index]
     sheet_row = app.get("sheet_row")
-
-    # Позначаємо статус заявки як deleted
-    app["proposal_status"] = "deleted"
-
-    # Зафарбовуємо рядок у таблиці1
     if sheet_row:
-        color_entire_row_in_table1(sheet_row, deep_red_format, 52)
-        # Зафарбовуємо клітинку в таблиці2 (стовпець L = 12)
-        color_cell_in_table2_red(sheet_row, 12)
+        color_cell_red(sheet_row)
 
-    # Зберігаємо зміни
+    delete_application(message.from_user.id, index)
+    await message.answer("Ваша заявка видалена.", reply_markup=get_main_menu_keyboard())
+    await state.finish()
+
+############################################
+# ПІДТВЕРДИТИ ПРОПОЗИЦІЮ (CONFIRMED)
+############################################
+
+@dp.message_handler(Text(equals="Підтвердити"), state=ApplicationStates.viewing_application)
+async def confirm_proposal(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    index = data.get("selected_app_index")
+    update_application_status(message.from_user.id, index, "confirmed")
+
+    apps = load_applications()
+    uid = str(message.from_user.id)
+    app = apps[uid][index]
+
+    sheet_row = app.get("sheet_row")
+    if sheet_row:
+        color_cell_green(sheet_row)
+
     save_applications(apps)
 
-    await message.answer("Ваша заявка позначена як 'deleted'.", reply_markup=get_main_menu_keyboard())
+    timestamp = app.get("timestamp", "")
+    try:
+        dt = datetime.fromisoformat(timestamp)
+        formatted_date = dt.strftime("%d.%m.%Y")
+    except Exception:
+        formatted_date = timestamp or "—"
+
+    extra_fields = app.get("extra_fields", {})
+    extra_list = []
+    for key, value in extra_fields.items():
+        ukr_name = friendly_names.get(key, key)
+        extra_list.append(f"{ukr_name}: {value}")
+    extra_part = ""
+    if extra_list:
+        extra_part = f"Додаткові параметри:\n<b>{chr(10).join(extra_list)}</b>\n"
+
+    user_fullname = app.get("fullname", "")
+    phone_from_app = app.get("phone", "")
+    if not phone_from_app:
+        users = load_users()
+        phone_from_app = users.get("approved_users", {}).get(uid, {}).get("phone", "")
+    if not phone_from_app:
+        phone_from_app = "—"
+
+    if not user_fullname:
+        users = load_users()
+        user_fullname = users.get("approved_users", {}).get(uid, {}).get("fullname", "—")
+
+    user_fullname_line = f"Користувач: {user_fullname}"
+    user_phone_line = f"Телефон: {phone_from_app}"
+
+    admin_msg = (
+        "<b>ЗАЯВКА ПІДТВЕРДЖЕНА</b>\n\n"
+        "Повна інформація по заявці:\n"
+        f"Дата створення: <b>{formatted_date}</b>\n\n"
+        f"ФГ: <b>{app.get('fgh_name', 'Невідомо')}</b>\n"
+        f"ЄДРПОУ: <b>{app.get('edrpou', 'Невідомо')}</b>\n"
+        f"Область: <b>{app.get('region', 'Невідомо')}</b>\n"
+        f"Район: <b>{app.get('district', 'Невідомо')}</b>\n"
+        f"Місто: <b>{app.get('city', 'Невідомо')}</b>\n"
+        f"Група: <b>{app.get('group', 'Невідомо')}</b>\n"
+        f"Культура: <b>{app.get('culture', 'Невідомо')}</b>\n"
+        f"{extra_part}"
+        f"Кількість: <b>{app.get('quantity', 'Невідомо')} т</b>\n"
+        f"Бажана ціна: <b>{app.get('price', 'Невідомо')}</b>\n"
+        f"Валюта: <b>{app.get('currency', 'Невідомо')}</b>\n"
+        f"Форма оплати: <b>{app.get('payment_form', 'Невідомо')}</b>\n"
+        f"Пропозиція ціни: <b>{app.get('proposal', 'Невідомо')}</b>\n\n"
+        f"{user_fullname_line}\n"
+        f"{user_phone_line}"
+    )
+
+    for admin_id in ADMINS:
+        try:
+            await bot.send_message(admin_id, admin_msg)
+        except Exception as e:
+            logging.exception(f"Не вдалося відправити підтвердження адміну {admin_id}: {e}")
+
+    await message.answer("Ви підтвердили пропозицію. Очікуйте на подальші дії від менеджера/адміністратора.",
+                         reply_markup=get_main_menu_keyboard())
+    await state.finish()
+
+############################################
+# ВИДАЛИТИ ЗАЯВКУ (КНОПКА ПІД ЧАС ПЕРЕГЛЯДУ)
+############################################
+
+@dp.message_handler(Text(equals="Видалити"), state=ApplicationStates.viewing_application)
+async def delete_request(message: types.Message, state: FSMContext):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add("Так", "Ні")
+    await message.answer("Ви впевнені, що хочете видалити заявку?", reply_markup=kb)
+    await ApplicationStates.confirm_deletion.set()
+
+@dp.message_handler(Text(equals="Так"), state=ApplicationStates.confirm_deletion)
+async def confirm_deletion(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    index = data.get("selected_app_index")
+    uid = str(message.from_user.id)
+    apps = load_applications()
+    user_apps = apps.get(uid, [])
+
+    if index is None or index < 0 or index >= len(user_apps):
+        await message.answer("Невірна заявка.", reply_markup=get_main_menu_keyboard())
+        await state.finish()
+        return
+
+    app = user_apps[index]
+    sheet_row = app.get("sheet_row")
+    if sheet_row:
+        color_cell_red(sheet_row)
+    delete_application(message.from_user.id, index)
+
+    await message.answer("Ваша заявка видалена.", reply_markup=get_main_menu_keyboard())
     await state.finish()
 
 @dp.message_handler(Text(equals="Ні"), state=ApplicationStates.confirm_deletion)
 async def cancel_deletion(message: types.Message, state: FSMContext):
     await ApplicationStates.viewing_application.set()
     await message.answer("Видалення скасовано.", reply_markup=get_main_menu_keyboard())
+
+@dp.message_handler(Text(equals="Назад"), state="*")
+async def go_to_main_menu(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state and current_state.startswith("AdminReview"):
+        return
+    await state.finish()
+    await message.answer("Головне меню:", reply_markup=get_main_menu_keyboard())
 
 ############################################
 # КНОПКА "ПІДТВЕРДИТИ" ПІСЛЯ WEBAPP
@@ -1325,10 +1364,9 @@ async def poll_manager_proposals():
             rows = ws.get_all_values()
             apps = load_applications()
             for i, row in enumerate(rows[1:], start=2):
-                # row - це список значень з рядка, де row[0] відповідає колонці A, row[1] - B тощо
                 if len(row) < 15:
                     continue
-                current_manager_price_str = row[14].strip()  # кол. O (15-й стовпець)
+                current_manager_price_str = row[14].strip()
                 if not current_manager_price_str:
                     continue
                 try:
@@ -1337,7 +1375,7 @@ async def poll_manager_proposals():
                     continue
 
                 for uid, app_list in apps.items():
-                    for idx, app in enumerate(app_list):
+                    for idx, app in enumerate(app_list, start=1):
                         if app.get("sheet_row") == i:
                             status = app.get("proposal_status", "active")
                             original_manager_price_str = app.get("original_manager_price", "").strip()
@@ -1347,7 +1385,6 @@ async def poll_manager_proposals():
                                 orig_price = None
 
                             if orig_price is None:
-                                # Перший раз отримали manager_price
                                 culture = app.get("culture", "Невідомо")
                                 quantity = app.get("quantity", "Невідомо")
                                 app["original_manager_price"] = current_manager_price_str
@@ -1355,7 +1392,7 @@ async def poll_manager_proposals():
                                 app["proposal_status"] = "Agreed"
                                 await bot.send_message(
                                     app.get("chat_id"),
-                                    f"Нова пропозиція по Вашій заявці {idx+1}. {culture} | {quantity} т. Ціна: {current_manager_price_str}"
+                                    f"Нова пропозиція по Вашій заявці {idx}. {culture} | {quantity} т. Ціна: {current_manager_price_str}"
                                 )
                             else:
                                 previous_proposal = app.get("proposal")
@@ -1369,7 +1406,7 @@ async def poll_manager_proposals():
                                         quantity = app.get("quantity", "Невідомо")
                                         await bot.send_message(
                                             app.get("chat_id"),
-                                            f"Ціна по заявці {idx+1}. {culture} | {quantity} т змінилась з {previous_proposal} на {current_manager_price_str}"
+                                            f"Ціна по заявці {idx}. {culture} | {quantity} т змінилась з {previous_proposal} на {current_manager_price_str}"
                                         )
                                     else:
                                         await bot.send_message(
