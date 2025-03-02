@@ -20,7 +20,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiohttp import web
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from gspread_formatting import format_cell_range, cellFormat, Color, clear_cell_formatting
+from gspread_formatting import format_cell_range, cellFormat, Color
 from gspread.utils import rowcol_to_a1
 
 ############################################
