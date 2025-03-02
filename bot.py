@@ -588,7 +588,7 @@ async def admin_moderation_section_handler(message: types.Message, state: FSMCon
         # Відображаємо по 2 в рядку
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         row = []
-        approved_items = list(approved.items())  # [(uid, {fullname,phone}), ...]
+        approved_items = list(approved.items())  # [(uid, {fullname, phone}), ...]
         for i, (uid, info) in enumerate(approved_items, start=1):
             fname = info.get("fullname", f"ID:{uid}")
             btn_text = f"{fname} | {uid}"
@@ -609,6 +609,55 @@ async def admin_moderation_section_handler(message: types.Message, state: FSMCon
         await AdminMenuStates.choosing_section.set()
     else:
         await message.answer("Оберіть зі списку: «Користувачі на модерацію», «База користувачів» або «Назад».")
+        
+
+# Новий хендлер для обробки pending-заявки
+@dp.message_handler(state=AdminReview.waiting_for_application_selection)
+async def admin_select_pending_application(message: types.Message, state: FSMContext):
+    if message.text == "Назад":
+        await message.answer("Повертаємось до розділу 'Модерація':", reply_markup=get_admin_moderation_menu())
+        await AdminMenuStates.moderation_section.set()
+        return
+
+    data = await state.get_data()
+    pending = data.get("pending_dict", {})
+    selected_fullname = message.text.strip()
+    
+    uid = None
+    for k, info in pending.items():
+        if info.get("fullname", "").strip() == selected_fullname:
+            uid = k
+            break
+
+    if not uid:
+        await message.answer("Заявку не знайдено. Спробуйте ще раз або натисніть 'Назад'.", reply_markup=remove_keyboard())
+        return
+
+    info = pending[uid]
+    timestamp_str = info.get("timestamp", "")
+    if timestamp_str:
+        dt = datetime.fromisoformat(timestamp_str)
+        dt_kyiv = dt.astimezone(ZoneInfo("Europe/Kiev"))
+        formatted_timestamp = dt_kyiv.strftime("%d.%m.%Y | %H:%M:%S")
+    else:
+        formatted_timestamp = "Невідомо"
+
+    text = (
+        f"Користувач на модерацію:\n"
+        f"User ID: {uid}\n"
+        f"ПІБ: {info.get('fullname', 'Невідомо')}\n"
+        f"Номер: {info.get('phone', '')}\n"
+        f"Дата та час: {formatted_timestamp}"
+    )
+
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add("Дозволити", "Заблокувати")
+    kb.add("Назад")
+
+    await state.update_data(selected_uid=uid)
+    await message.answer(text, reply_markup=kb)
+    await AdminReview.waiting_for_decision.set()
+    
 
 #
 # 1.1) Перегляд Approved-користувачів
@@ -664,6 +713,7 @@ async def admin_view_approved_users(message: types.Message, state: FSMContext):
     await state.update_data(selected_approved_user_id=user_id_str)
     await AdminReview.viewing_approved_user.set()
     await message.answer(details, reply_markup=kb)
+
 
 #
 # 1.2) Детальний перегляд 1 approved-користувача
@@ -726,112 +776,6 @@ async def admin_view_approved_single_user(message: types.Message, state: FSMCont
     else:
         await message.answer("Оберіть: «Редагувати», «Видалити» або «Назад».")
 
-#
-# 1.2.1) Редагування схваленого користувача
-#
-
-@dp.message_handler(state=AdminReview.editing_approved_user)
-async def admin_edit_approved_user_menu(message: types.Message, state: FSMContext):
-    text = message.text.strip()
-
-    if text == "Назад":
-        # Повертаємось до відображення користувача
-        data = await state.get_data()
-        user_id_str = data.get("selected_approved_user_id", None)
-        if user_id_str is None:
-            await message.answer("Немає користувача. Повернення.", reply_markup=get_admin_moderation_menu())
-            await AdminMenuStates.moderation_section.set()
-            return
-
-        users_data = load_users()
-        user_info = users_data.get("approved_users", {}).get(user_id_str, {})
-        fullname = user_info.get("fullname", "—")
-        phone = user_info.get("phone", "—")
-        details = (
-            f"ПІБ: {fullname}\n"
-            f"Номер телефону: {phone}\n"
-            f"Телеграм ID: {user_id_str}"
-        )
-
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb.row("Редагувати", "Видалити")
-        kb.add("Назад")
-        await AdminReview.viewing_approved_user.set()
-        await message.answer(details, reply_markup=kb)
-        return
-
-    elif text == "Змінити ПІБ":
-        await AdminReview.editing_approved_user_fullname.set()
-        await message.answer("Введіть новий ПІБ:", reply_markup=remove_keyboard())
-
-    elif text == "Змінити номер телефону":
-        await AdminReview.editing_approved_user_phone.set()
-        await message.answer("Введіть новий номер телефону у форматі +380XXXXXXXXX:", reply_markup=remove_keyboard())
-
-    else:
-        await message.answer("Оберіть 'Змінити ПІБ', 'Змінити номер телефону' або 'Назад'.")
-
-@dp.message_handler(state=AdminReview.editing_approved_user_fullname)
-async def admin_edit_approved_user_fullname(message: types.Message, state: FSMContext):
-    new_fullname = message.text.strip()
-    if not new_fullname:
-        await message.answer("ПІБ не може бути порожнім. Спробуйте ще раз.")
-        return
-
-    data = await state.get_data()
-    user_id_str = data.get("selected_approved_user_id", None)
-    if user_id_str is None:
-        await message.answer("Немає користувача для редагування. Повернення.", reply_markup=get_admin_moderation_menu())
-        await AdminMenuStates.moderation_section.set()
-        return
-
-    users_data = load_users()
-    if user_id_str not in users_data.get("approved_users", {}):
-        await message.answer("Користувача не знайдено в approved_users. Повернення.", reply_markup=get_admin_moderation_menu())
-        await AdminMenuStates.moderation_section.set()
-        return
-
-    users_data["approved_users"][user_id_str]["fullname"] = new_fullname
-    save_users(users_data)
-
-    await message.answer("ПІБ успішно змінено!", reply_markup=remove_keyboard())
-    # Повертаємось у меню редагування
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.row("Змінити ПІБ", "Змінити номер телефону")
-    kb.add("Назад")
-    await AdminReview.editing_approved_user.set()
-    await message.answer("Оновлено! Оберіть наступну дію:", reply_markup=kb)
-
-@dp.message_handler(state=AdminReview.editing_approved_user_phone)
-async def admin_edit_approved_user_phone(message: types.Message, state: FSMContext):
-    new_phone = re.sub(r"[^\d+]", "", message.text.strip())
-    if not re.fullmatch(r"\+380\d{9}", new_phone):
-        await message.answer("Невірний формат. Введіть номер у форматі +380XXXXXXXXX або «Назад» для відміни.")
-        return
-
-    data = await state.get_data()
-    user_id_str = data.get("selected_approved_user_id", None)
-    if user_id_str is None:
-        await message.answer("Немає користувача для редагування.", reply_markup=get_admin_moderation_menu())
-        await AdminMenuStates.moderation_section.set()
-        return
-
-    users_data = load_users()
-    if user_id_str not in users_data.get("approved_users", {}):
-        await message.answer("Користувача не знайдено в approved_users.", reply_markup=get_admin_moderation_menu())
-        await AdminMenuStates.moderation_section.set()
-        return
-
-    users_data["approved_users"][user_id_str]["phone"] = new_phone
-    save_users(users_data)
-
-    await message.answer("Номер телефону успішно змінено!", reply_markup=remove_keyboard())
-    # Повертаємось у меню редагування
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.row("Змінити ПІБ", "Змінити номер телефону")
-    kb.add("Назад")
-    await AdminReview.editing_approved_user.set()
-    await message.answer("Оновлено! Оберіть наступну дію:", reply_markup=kb)
 
 ############################################
 # 2) РОЗДІЛ «ЗАЯВКИ»
