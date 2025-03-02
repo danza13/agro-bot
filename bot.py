@@ -533,20 +533,35 @@ async def admin_remove_app_permanently(user_id: int, app_index: int):
 def update_google_sheet(data: dict) -> int:
     ws = get_worksheet1()
     ensure_columns(ws, 52)
-    col_a = ws.col_values(1)
-    new_row = len(col_a) + 1
-    request_number = new_row - 1
 
-    ws.update_cell(new_row, 1, request_number)
+    # Отримуємо значення першого стовпця
+    col_a = ws.col_values(1)
+    # Пропускаємо перший рядок (заголовки) і фільтруємо числові значення
+    numeric_values = []
+    for value in col_a[1:]:
+        try:
+            numeric_values.append(int(value))
+        except ValueError:
+            continue
+
+    # Якщо є числа, беремо останнє, інакше встановлюємо 0
+    last_number = numeric_values[-1] if numeric_values else 0
+    new_request_number = last_number + 1
+
+    # Обчислюємо номер нового рядка: це буде (кількість рядків + 1)
+    new_row = len(col_a) + 1
+
+    # Записуємо номер заявки в першу клітинку нового рядка
+    ws.update_cell(new_row, 1, new_request_number)
+
+    # Далі оновлюємо інші клітинки (наприклад, дата, ПІБ тощо)
     current_date = datetime.now().strftime("%d.%m")
     ws.update_cell(new_row, 2, current_date)
-
     fullname = data.get("fullname", "")
     if isinstance(fullname, dict):
         fullname = fullname.get("fullname", "")
     fullname_lines = "\n".join(fullname.split())
     ws.update_cell(new_row, 3, fullname_lines)
-
     ws.update_cell(new_row, 4, data.get("fgh_name", ""))
     ws.update_cell(new_row, 5, data.get("edrpou", ""))
     ws.update_cell(new_row, 6, data.get("group", ""))
@@ -579,7 +594,6 @@ def update_google_sheet(data: dict) -> int:
     ws.update_cell(new_row, 13, data.get("price", ""))
     ws.update_cell(new_row, 15, data.get("manager_price", ""))
     ws.update_cell(new_row, 16, data.get("phone", ""))
-
     ws.update_cell(new_row, 52, data.get("user_id", ""))
 
     return new_row
