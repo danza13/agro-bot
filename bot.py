@@ -381,6 +381,74 @@ def delete_price_cell_in_table2(row: int, col: int = 12):
     # Очищаємо останню клітинку після зсуву
     last_row_to_clear = len(col_values) + 1
     ws2.update_cell(last_row_to_clear, col, "")
+    
+def export_database():
+    """
+    Створює новий лист у таблиці 1 з назвою "База дд.мм"
+    і вносить дані для кожного схваленого користувача:
+      A: Телеграм‑ID
+      B: ПІБ
+      C: Номер телефону
+      D: Остання заявка (дата в форматі дд.мм.рррр, alt+enter, час в форматі гг:хв)
+      E: Загальна кількість заявок
+    """
+    # Завантажуємо дані користувачів та заявок
+    users_data = load_users()
+    approved = users_data.get("approved_users", {})
+    apps = load_applications()
+    
+    # Ініціалізуємо gspread та відкриваємо таблицю 1
+    client = init_gspread()
+    sheet = client.open_by_key(GOOGLE_SPREADSHEET_ID)
+    
+    # Форматуємо поточну дату для назви листа (наприклад, "База 13.02")
+    today = datetime.now().strftime("%d.%m")
+    new_title = f"База {today}"
+    # Створюємо новий worksheet; припустимо 1000 рядків і 5 стовпців
+    new_ws = sheet.add_worksheet(title=new_title, rows="1000", cols="5")
+    
+    # Записуємо заголовки в 1-й рядок
+    headers = ["ID", "ПІБ", "Номер телефону", "Остання заявка", "Загальна кількість заявок"]
+    for col, header in enumerate(headers, start=1):
+        new_ws.update_cell(1, col, header)
+    
+    # Записуємо дані по кожному схваленому користувачу, починаючи з 2-го рядка
+    row_index = 2
+    for uid, info in approved.items():
+        # Отримуємо заявки для даного користувача
+        user_apps = apps.get(uid, [])
+        count_apps = len(user_apps)
+        last_timestamp = ""
+        if count_apps > 0:
+            # Знаходимо останню заявку за timestamp
+            last_app = max(user_apps, key=lambda a: a.get("timestamp", ""))
+            ts = last_app.get("timestamp", "")
+            try:
+                dt = datetime.fromisoformat(ts)
+                # Форматуємо дату як "дд.мм.рррр" та час як "гг:хв"
+                last_timestamp = dt.strftime("%d.%m.%Y\n%H:%M")
+            except Exception:
+                last_timestamp = ts
+        
+        new_ws.update_cell(row_index, 1, uid)
+        new_ws.update_cell(row_index, 2, info.get("fullname", ""))
+        new_ws.update_cell(row_index, 3, info.get("phone", ""))
+        new_ws.update_cell(row_index, 4, last_timestamp)
+        new_ws.update_cell(row_index, 5, count_apps)
+        row_index += 1
+
+@dp.message_handler(Text(equals="Вивантажити базу"), state=AdminReview.viewing_approved_list)
+async def handle_export_database(message: types.Message, state: FSMContext):
+    """
+    Хендлер для кнопки "Вивантажити базу" у розділі "База користувачів".
+    При натисканні викликається функція export_database(), а адміністратору повідомляється про результат.
+    """
+    try:
+        export_database()
+        await message.answer("База успішно вивантажена до Google Sheets.", reply_markup=get_admin_moderation_menu())
+    except Exception as e:
+        logging.exception(f"Помилка вивантаження бази: {e}")
+        await message.answer("Помилка вивантаження бази.", reply_markup=get_admin_moderation_menu())
 
 ############################################
 # ПОВНЕ ВИДАЛЕННЯ ЗАЯВКИ АДМІНОМ (5 КРОКІВ)
@@ -786,7 +854,7 @@ async def admin_view_approved_users(message: types.Message, state: FSMContext):
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.row("Редагувати", "Видалити")
-    kb.add("Назад")
+    kb.add("Вивантажити базу", "Назад")
 
     await state.update_data(selected_approved_user_id=user_id_str)
     await AdminReview.viewing_approved_user.set()
