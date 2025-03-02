@@ -20,7 +20,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiohttp import web
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from gspread_formatting import format_cell_range, cellFormat, Color
+from gspread_formatting import format_cell_range, cellFormat, Color, set_column_width
 from gspread.utils import rowcol_to_a1
 
 ############################################
@@ -455,10 +455,12 @@ def export_database():
     # Обчислюємо максимальну довжину тексту для кожного стовпця
     num_cols = 5
     for col in range(1, num_cols + 1):
+        # Отримуємо літерне позначення стовпця, напр. "A" для 1, "B" для 2 і т.д.
+        col_letter = rowcol_to_a1(1, col)[0]
+        col_range = f"{col_letter}:{col_letter}"
         max_len = max(len(str(row[col-1])) for row in data_matrix)
-        # Прийнято, що приблизно 10 пікселів на символ (це можна коригувати)
-        width = max_len * 10
-        set_column_width(new_ws, col, width)
+        width = max_len * 10  # Приблизне число пікселів на символ (можна налаштувати)
+        set_column_width(new_ws, col_range, width)
 
 @dp.message_handler(Text(equals="Вивантажити базу"), state=AdminReview.viewing_approved_list)
 async def handle_export_database(message: types.Message, state: FSMContext):
