@@ -640,9 +640,72 @@ def get_admin_moderation_menu():
 def get_admin_requests_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("Підтверджені", "Видалені")
-    kb.add("Переглянути заявки культур")
+    kb.add("Переглянути заявки культур", "Видалення заявок")
     kb.add("Назад")
     return kb
+    
+############################################
+# ХЕНДЛЕР Видалення заявок
+############################################
+
+@dp.message_handler(Text(equals="Видалення заявок"), state=AdminMenuStates.requests_section)
+async def handle_delete_applications(message: types.Message, state: FSMContext):
+    """
+    Обробляє кнопку «Видалення заявок»: зчитує дані з Google Sheets і формує клавіатуру,
+    де для кожного рядка (з заявкою) показується номер заявки (значення клітинки A) та номер рядка.
+    """
+    try:
+        ws = get_worksheet1()
+        rows = ws.get_all_values()
+        if len(rows) <= 1:
+            await message.answer("У таблиці немає заявок.", reply_markup=get_admin_requests_menu())
+            return
+
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        # Пропускаємо заголовковий рядок
+        for i, row in enumerate(rows[1:], start=2):
+            if row and row[0].strip():
+                request_number = row[0].strip()
+                # Наприклад, "123 (рядок 5)"
+                btn_text = f"{request_number} (рядок {i})"
+                kb.add(btn_text)
+        kb.add("Назад")
+        await message.answer("Оберіть заявку для видалення:", reply_markup=kb)
+    except Exception as e:
+        logging.exception("Помилка отримання заявок з Google Sheets")
+        await message.answer("Помилка отримання заявок.", reply_markup=get_admin_requests_menu())
+
+
+@dp.message_handler(lambda message: re.match(r"^\d+\s\(рядок\s\d+\)$", message.text), state=AdminMenuStates.requests_section)
+async def handle_delete_application_selection(message: types.Message, state: FSMContext):
+    """
+    Обробляє вибір конкретної заявки для видалення.
+    Парсить номер рядка із тексту кнопки, знаходить заявку у JSON (за полем sheet_row)
+    і викликає admin_remove_app_permanently для остаточного видалення.
+    """
+    text = message.text.strip()
+    match = re.search(r"\(рядок\s(\d+)\)$", text)
+    if not match:
+        await message.answer("Невірний формат вибору.", reply_markup=get_admin_requests_menu())
+        return
+    row_number = int(match.group(1))
+
+    apps = load_applications()
+    found = False
+    for uid, app_list in apps.items():
+        for idx, app in enumerate(app_list):
+            if app.get("sheet_row") == row_number:
+                success = await admin_remove_app_permanently(int(uid), idx)
+                if success:
+                    await message.answer(f"Заявку з рядка {row_number} успішно видалено.", reply_markup=get_admin_requests_menu())
+                else:
+                    await message.answer("Помилка видалення заявки.", reply_markup=get_admin_requests_menu())
+                found = True
+                break
+        if found:
+            break
+    if not found:
+        await message.answer("Заявку не знайдено.", reply_markup=get_admin_requests_menu())
 
 ############################################
 # ХЕНДЛЕР /admin
