@@ -2095,13 +2095,19 @@ async def cancel_deletion(message: types.Message, state: FSMContext):
 async def go_to_main_menu(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     
-    # Якщо адміністратор
-    if current_state and (current_state.startswith("AdminReview:") or current_state.startswith("AdminMenuStates:")):
-        await state.finish()
-        await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
-        return
+    # Якщо стан пов'язаний з адмін-інтерфейсом, повертаємо їх до відповідного меню
+    if current_state:
+        if current_state.startswith("AdminReview:"):
+            # Наприклад, повернутися до попереднього меню адмініна (якщо потрібно)
+            await state.finish()  # або await state.reset_state(with_data=False)
+            await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
+            return
+        elif current_state.startswith("AdminMenuStates:"):
+            await state.finish()
+            await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
+            return
 
-    # Для звичайних користувачів
+    # Для звичайних користувачів – повертаємо стандартне головне меню
     await state.finish()
     await message.answer("Головне меню:", reply_markup=get_main_menu_keyboard())
 
