@@ -2094,13 +2094,14 @@ async def cancel_deletion(message: types.Message, state: FSMContext):
 @dp.message_handler(Text(equals="Назад"), state="*")
 async def go_to_main_menu(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
-
-    if current_state and current_state.startswith("AdminReview:"):
+    
+    # Якщо адміністратор
+    if current_state and (current_state.startswith("AdminReview:") or current_state.startswith("AdminMenuStates:")):
+        await state.finish()
+        await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
         return
 
-    if current_state and current_state.startswith("AdminMenuStates:"):
-        return
-
+    # Для звичайних користувачів
     await state.finish()
     await message.answer("Головне меню:", reply_markup=get_main_menu_keyboard())
 
