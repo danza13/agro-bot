@@ -676,20 +676,6 @@ async def handle_delete_applications(message: types.Message, state: FSMContext):
         await message.answer("Помилка отримання заявок.", reply_markup=get_admin_requests_menu())
 
 
-import re
-
-# Додамо новий стан для підтвердження видалення в групі AdminReview:
-class AdminReview(StatesGroup):
-    waiting_for_application_selection = State()
-    waiting_for_decision = State()
-    viewing_confirmed_list = State()
-    viewing_confirmed_app = State()
-    viewing_deleted_list = State()
-    viewing_deleted_app = State()
-    confirm_deletion_app = State()  # <--- Новий стан для підтвердження видалення
-    # інші стани залишаються без змін...
-
-
 @dp.message_handler(lambda message: re.match(r"^\d+\s\(рядок\s\d+\)$", message.text), state=AdminMenuStates.requests_section)
 async def handle_delete_application_selection(message: types.Message, state: FSMContext):
     """
