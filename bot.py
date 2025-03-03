@@ -640,7 +640,7 @@ def get_admin_moderation_menu():
 def get_admin_requests_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("Підтверджені", "Видалені")
-    kb.add("Переглянути заявки культур", "Видалення заявок")
+    kb.add("Видалення заявок")
     kb.add("Назад")
     return kb
     
@@ -1272,14 +1272,11 @@ async def admin_requests_section_handler(message: types.Message, state: FSMConte
         await AdminReview.viewing_deleted_list.set()
         await message.answer("Список «видалених» заявок:", reply_markup=kb)
 
-    elif text == "Переглянути заявки культур":
-        await message.answer("Функціонал «Переглянути заявки культур» ще не реалізовано.", reply_markup=get_admin_requests_menu())
-
     elif text == "Назад":
         await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
         await AdminMenuStates.choosing_section.set()
     else:
-        await message.answer("Оберіть дію: «Підтверджені», «Видалені», «Переглянути заявки культур» або «Назад».")
+        await message.answer("Оберіть дію: «Підтверджені», «Видалені», або «Назад».")
 
 ############################################
 # ПЕРЕГЛЯД «ПІДТВЕРДЖЕНИХ»
