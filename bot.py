@@ -2166,7 +2166,7 @@ async def poll_manager_proposals():
             for i, row in enumerate(rows[1:], start=2):
                 if len(row) < 15:
                     continue
-                current_manager_price_str = row[14].strip()
+                current_manager_price_str = row[13].strip()
                 if not current_manager_price_str:
                     continue
                 try:
