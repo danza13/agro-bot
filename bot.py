@@ -2098,7 +2098,7 @@ async def edit_application_handler(message: types.Message, state: FSMContext):
     url_with_data = f"{webapp_url}?data={prefill}"
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(types.KeyboardButton("Відкрити WebApp для редагування", web_app=types.WebAppInfo(url=url_with_data)))
+    kb.add(types.KeyboardButton("Відкрити форму для редагування", web_app=types.WebAppInfo(url=url_with_data)))
     kb.row("Скасувати")
     await message.answer("Редагуйте заявку у WebApp:", reply_markup=kb)
     await state.set_state(ApplicationStates.waiting_for_webapp_data.state)
