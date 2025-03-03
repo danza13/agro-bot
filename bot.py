@@ -224,7 +224,7 @@ class AdminReview(StatesGroup):
     viewing_confirmed_app = State()
     viewing_deleted_list = State()
     viewing_deleted_app = State()
-    # **NEW**: перегляд / редагування approved-користувачів
+    confirm_deletion_app = State()
     viewing_approved_list = State()
     viewing_approved_user = State()
     editing_approved_user = State()
@@ -676,12 +676,26 @@ async def handle_delete_applications(message: types.Message, state: FSMContext):
         await message.answer("Помилка отримання заявок.", reply_markup=get_admin_requests_menu())
 
 
+import re
+
+# Додамо новий стан для підтвердження видалення в групі AdminReview:
+class AdminReview(StatesGroup):
+    waiting_for_application_selection = State()
+    waiting_for_decision = State()
+    viewing_confirmed_list = State()
+    viewing_confirmed_app = State()
+    viewing_deleted_list = State()
+    viewing_deleted_app = State()
+    confirm_deletion_app = State()  # <--- Новий стан для підтвердження видалення
+    # інші стани залишаються без змін...
+
+
 @dp.message_handler(lambda message: re.match(r"^\d+\s\(рядок\s\d+\)$", message.text), state=AdminMenuStates.requests_section)
 async def handle_delete_application_selection(message: types.Message, state: FSMContext):
     """
-    Обробляє вибір конкретної заявки для видалення.
-    Парсить номер рядка із тексту кнопки, знаходить заявку у JSON (за полем sheet_row)
-    і викликає admin_remove_app_permanently для остаточного видалення.
+    Обробляє вибір заявки для видалення.
+    Парсить номер рядка із тексту кнопки та зберігає інформацію про заявку в state.
+    Потім запитує підтвердження видалення з кнопками "Так" і "Ні".
     """
     text = message.text.strip()
     match = re.search(r"\(рядок\s(\d+)\)$", text)
@@ -695,17 +709,56 @@ async def handle_delete_application_selection(message: types.Message, state: FSM
     for uid, app_list in apps.items():
         for idx, app in enumerate(app_list):
             if app.get("sheet_row") == row_number:
-                success = await admin_remove_app_permanently(int(uid), idx)
-                if success:
-                    await message.answer(f"Заявку з рядка {row_number} успішно видалено.", reply_markup=get_admin_requests_menu())
-                else:
-                    await message.answer("Помилка видалення заявки.", reply_markup=get_admin_requests_menu())
+                # Зберігаємо дані про вибрану заявку в state
+                await state.update_data(
+                    deletion_uid=uid,
+                    deletion_app_index=idx,
+                    deletion_row_number=row_number
+                )
+                # Запитуємо підтвердження
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("Так", "Ні")
+                await message.answer(f"Ви хочете видалити заявку з рядка {row_number}?", reply_markup=kb)
+                await AdminReview.confirm_deletion_app.set()
                 found = True
                 break
         if found:
             break
     if not found:
         await message.answer("Заявку не знайдено.", reply_markup=get_admin_requests_menu())
+
+
+@dp.message_handler(Text(equals="Так"), state=AdminReview.confirm_deletion_app)
+async def confirm_deletion_yes(message: types.Message, state: FSMContext):
+    """
+    Обробляє підтвердження видалення (Так):
+    запускає процес видалення вибраної заявки.
+    """
+    data = await state.get_data()
+    uid = data.get("deletion_uid")
+    app_index = data.get("deletion_app_index")
+    row_number = data.get("deletion_row_number")
+    if uid is None or app_index is None:
+        await message.answer("Інформацію про заявку не знайдено.", reply_markup=get_admin_requests_menu())
+        await state.finish()
+        return
+
+    success = await admin_remove_app_permanently(int(uid), app_index)
+    if success:
+        await message.answer(f"Заявку з рядка {row_number} успішно видалено.", reply_markup=get_admin_requests_menu())
+    else:
+        await message.answer("Помилка видалення заявки.", reply_markup=get_admin_requests_menu())
+    await state.finish()
+
+
+@dp.message_handler(Text(equals="Ні"), state=AdminReview.confirm_deletion_app)
+async def confirm_deletion_no(message: types.Message, state: FSMContext):
+    """
+    Обробляє відмову від видалення (Ні):
+    повертає до списку заявок.
+    """
+    await state.finish()
+    await message.answer("Видалення скасовано. Повертаємось до списку заявок.", reply_markup=get_admin_requests_menu())
 
 ############################################
 # ХЕНДЛЕР /admin
