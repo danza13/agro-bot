@@ -1588,6 +1588,17 @@ async def show_menu(message: types.Message, state: FSMContext):
     await message.answer("Головне меню:", reply_markup=get_main_menu_keyboard())
 
 ############################################
+# /support
+############################################
+
+@dp.message_handler(commands=["support"], state="*")
+async def support_command(message: types.Message, state: FSMContext):
+    keyboard = types.InlineKeyboardMarkup()
+    # Замініть текст кнопки, якщо потрібно, та посилання на бота
+    keyboard.add(types.InlineKeyboardButton("Звернутись до підтримки", url="https://t.me/Dealeragro_bot"))
+    await message.answer("Якщо вам потрібна допомога, натисніть кнопку нижче:", reply_markup=keyboard)
+
+############################################
 # Подати заявку / Переглянути мої заявки
 ############################################
 
@@ -1609,7 +1620,7 @@ async def show_user_applications(message: types.Message):
     user_apps = apps.get(uid, [])
 
     if not user_apps:
-        await message.answer("Ви не маєте заявок.", reply_markup=remove_keyboard())
+        await message.answer("Ви не маєте заявок.", reply_markup=get_main_menu_keyboard())
         return
 
     buttons = []
