@@ -914,7 +914,7 @@ async def admin_decision_pending_user(message: types.Message, state: FSMContext)
         try:
             await bot.send_message(
                 int(uid),
-                "Вітаємо! Ви пройшли модерацію і тепер можете користуватися ботом.",
+                "Вітаємо! Ви пройшли модерацію і тепер можете користуватися ботом. Для початку роботи натисніть /start в Меню",
                 reply_markup=remove_keyboard()
             )
         except Exception as e:
