@@ -230,6 +230,9 @@ class AdminReview(StatesGroup):
     editing_approved_user = State()
     editing_approved_user_fullname = State()
     editing_approved_user_phone = State()
+    editing_applications_list = State()
+    editing_single_application = State()
+    select_new_status = State()
 
 ############################################
 # ФУНКЦІЇ РОБОТИ З ЛОКАЛЬНИМИ JSON-ФАЙЛАМИ
@@ -640,7 +643,7 @@ def get_admin_moderation_menu():
 def get_admin_requests_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("Підтверджені", "Видалені")
-    kb.add("Видалення заявок")
+    kb.add("Видалення заявок", "Редагування заявок")
     kb.add("Назад")
     return kb
     
@@ -1277,6 +1280,148 @@ async def admin_requests_section_handler(message: types.Message, state: FSMConte
         await AdminMenuStates.choosing_section.set()
     else:
         await message.answer("Оберіть дію: «Підтверджені», «Видалені», або «Назад».")
+
+############################################
+#  РЕДАГУВАННЯ ЗАЯВОК
+############################################
+
+@dp.message_handler(Text(equals="Редагування заявок"), state=AdminMenuStates.requests_section)
+async def handle_editing_applications(message: types.Message, state: FSMContext):
+    apps = load_applications()
+    users_with_active_apps = {}
+    # Шукаємо користувачів, у яких є заявки зі статусом "active"
+    for uid, user_apps in apps.items():
+        active_apps = [app for app in user_apps if app.get("proposal_status") == "active"]
+        if active_apps:
+            # Спробуємо взяти ім'я користувача із схвалених, або використаємо uid
+            user_info = load_users().get("approved_users", {}).get(uid, {})
+            display_name = user_info.get("fullname", f"User {uid}")
+            users_with_active_apps[display_name] = uid
+    if not users_with_active_apps:
+        await message.answer("Немає користувачів з активними заявками.", reply_markup=get_admin_requests_menu())
+        return
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    for name in users_with_active_apps.keys():
+        kb.add(name)
+    kb.add("Назад")
+    await state.update_data(editing_users=users_with_active_apps)
+    await message.answer("Оберіть користувача для редагування заявок:", reply_markup=kb)
+    await AdminReview.editing_applications_list.set()
+
+# 3. Хендлер для вибору користувача – показ списку всіх заявок цього користувача
+@dp.message_handler(state=AdminReview.editing_applications_list)
+async def admin_select_user_for_editing(message: types.Message, state: FSMContext):
+    if message.text == "Назад":
+        await message.answer("Повертаємось до меню заявок.", reply_markup=get_admin_requests_menu())
+        await AdminMenuStates.requests_section.set()
+        return
+    data = await state.get_data()
+    editing_users = data.get("editing_users", {})
+    uid = editing_users.get(message.text)
+    if not uid:
+        await message.answer("Будь ласка, оберіть користувача зі списку або натисніть 'Назад'.")
+        return
+    user_apps = load_applications().get(uid, [])
+    if not user_apps:
+        await message.answer("Для цього користувача немає заявок.", reply_markup=get_admin_requests_menu())
+        await AdminMenuStates.requests_section.set()
+        return
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    for i, app in enumerate(user_apps, start=1):
+        culture = app.get("culture", "Невідомо")
+        quantity = app.get("quantity", "Невідомо")
+        btn_text = f"{i}. {culture} | {quantity} т"
+        kb.add(btn_text)
+    kb.add("Назад")
+    await state.update_data(editing_uid=uid)
+    await message.answer("Список заявок користувача:", reply_markup=kb)
+    await AdminReview.editing_single_application.set()
+
+# 4. Хендлер для вибору конкретної заявки – показ повної інформації та запит нового статусу
+@dp.message_handler(Regexp(r"^\d+\.\s.+\s\|\s.+\sт$"), state=AdminReview.editing_single_application)
+async def admin_select_application_for_editing(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    uid = data.get("editing_uid")
+    if not uid:
+        await message.answer("Помилка даних.", reply_markup=get_admin_requests_menu())
+        await state.finish()
+        return
+    user_apps = load_applications().get(uid, [])
+    match = re.match(r"^(\d+)\.", message.text.strip())
+    if not match:
+        await message.answer("Невірний формат. Спробуйте ще раз.")
+        return
+    index = int(match.group(1)) - 1
+    if index < 0 or index >= len(user_apps):
+        await message.answer("Невірний вибір заявки.")
+        return
+    selected_app = user_apps[index]
+    details = [
+        "<b>Повна інформація по заявці:</b>",
+        f"Дата: {selected_app.get('timestamp', 'Невідомо')}",
+        f"ФГ: {selected_app.get('fgh_name', '')}",
+        f"ЄДРПОУ: {selected_app.get('edrpou', '')}",
+        f"Область: {selected_app.get('region', '')}",
+        f"Район: {selected_app.get('district', '')}",
+        f"Місто: {selected_app.get('city', '')}",
+        f"Група: {selected_app.get('group', '')}",
+        f"Культура: {selected_app.get('culture', '')}",
+        f"Кількість: {selected_app.get('quantity', '')}",
+        f"Форма оплати: {selected_app.get('payment_form', '')}",
+        f"Валюта: {selected_app.get('currency', '')}",
+        f"Бажана ціна: {selected_app.get('price', '')}",
+        f"Пропозиція: {selected_app.get('proposal', '—')}",
+        f"Поточний статус: {selected_app.get('proposal_status', '')}"
+    ]
+    await state.update_data(editing_app_index=index)
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.row("Активна", "Видалена", "Підтверджена")
+    kb.add("Назад")
+    details.append("\nЯкий статус призначити заявці?")
+    await message.answer("\n".join(details), parse_mode="HTML", reply_markup=kb)
+    await AdminReview.select_new_status.set()
+
+# 5. Хендлер для вибору нового статусу
+@dp.message_handler(lambda message: message.text in ["Активна", "Видалена", "Підтверджена"], state=AdminReview.select_new_status)
+async def update_app_status_via_edit(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    uid = data.get("editing_uid")
+    app_index = data.get("editing_app_index")
+    if uid is None or app_index is None:
+        await message.answer("Помилка даних.", reply_markup=get_admin_requests_menu())
+        await state.finish()
+        return
+    new_status = ""
+    if message.text == "Активна":
+        new_status = "active"
+    elif message.text == "Видалена":
+        new_status = "deleted"
+    elif message.text == "Підтверджена":
+        new_status = "confirmed"
+    update_application_status(int(uid), app_index, new_status)
+    await message.answer(f"Статус заявки оновлено на '{message.text}'.", reply_markup=get_admin_requests_menu())
+    await AdminMenuStates.requests_section.set()
+    await state.finish()
+
+# 6. Хендлер для кнопки "Назад" у виборі статусу – повернення до списку заявок користувача
+@dp.message_handler(Text(equals="Назад"), state=AdminReview.select_new_status)
+async def editing_app_status_back(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    uid = data.get("editing_uid")
+    if not uid:
+        await message.answer("Помилка даних.", reply_markup=get_admin_requests_menu())
+        await state.finish()
+        return
+    user_apps = load_applications().get(uid, [])
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    for i, app in enumerate(user_apps, start=1):
+        culture = app.get("culture", "Невідомо")
+        quantity = app.get("quantity", "Невідомо")
+        btn_text = f"{i}. {culture} | {quantity} т"
+        kb.add(btn_text)
+    kb.add("Назад")
+    await message.answer("Список заявок користувача:", reply_markup=kb)
+    await AdminReview.editing_single_application.set()
 
 ############################################
 # ПЕРЕГЛЯД «ПІДТВЕРДЖЕНИХ»
