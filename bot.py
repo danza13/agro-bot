@@ -1206,7 +1206,7 @@ async def admin_edit_approved_user_phone(message: types.Message, state: FSMConte
 @dp.message_handler(state=AdminMenuStates.requests_section)
 async def admin_requests_section_handler(message: types.Message, state: FSMContext):
     text = message.text.strip()
-
+    
     if text == "Підтверджені":
         apps = load_applications()
         confirmed_apps = []
@@ -1218,11 +1218,9 @@ async def admin_requests_section_handler(message: types.Message, state: FSMConte
                         "app_index": idx,
                         "app_data": app_data
                     })
-
         if not confirmed_apps:
             await message.answer("Немає підтверджених заявок.", reply_markup=get_admin_requests_menu())
             return
-
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         row = []
         for i, entry in enumerate(confirmed_apps, start=1):
@@ -1236,7 +1234,6 @@ async def admin_requests_section_handler(message: types.Message, state: FSMConte
         if row:
             kb.row(*row)
         kb.add("Назад")
-
         await state.update_data(confirmed_apps=confirmed_apps, from_requests_menu=True)
         await AdminReview.viewing_confirmed_list.set()
         await message.answer("Список підтверджених заявок:", reply_markup=kb)
@@ -1252,11 +1249,9 @@ async def admin_requests_section_handler(message: types.Message, state: FSMConte
                         "app_index": idx,
                         "app_data": app_data
                     })
-
         if not deleted_apps:
             await message.answer("Немає видалених заявок.", reply_markup=get_admin_requests_menu())
             return
-
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         row = []
         for i, entry in enumerate(deleted_apps, start=1):
@@ -1270,16 +1265,36 @@ async def admin_requests_section_handler(message: types.Message, state: FSMConte
         if row:
             kb.row(*row)
         kb.add("Назад")
-
         await state.update_data(deleted_apps=deleted_apps, from_requests_menu=True)
         await AdminReview.viewing_deleted_list.set()
         await message.answer("Список «видалених» заявок:", reply_markup=kb)
+
+    elif text == "Редагування заявок":
+        # Перевіряємо, чи є користувачі з активними заявками
+        apps = load_applications()
+        users_with_active_apps = {}
+        for uid, user_apps in apps.items():
+            active_apps = [app for app in user_apps if app.get("proposal_status") == "active"]
+            if active_apps:
+                user_info = load_users().get("approved_users", {}).get(uid, {})
+                display_name = user_info.get("fullname", f"User {uid}")
+                users_with_active_apps[display_name] = uid
+        if not users_with_active_apps:
+            await message.answer("Немає користувачів з активними заявками.", reply_markup=get_admin_requests_menu())
+            return
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        for name in users_with_active_apps.keys():
+            kb.add(name)
+        kb.add("Назад")
+        await state.update_data(editing_users=users_with_active_apps)
+        await message.answer("Оберіть користувача для редагування заявок:", reply_markup=kb)
+        await AdminReview.editing_applications_list.set()
 
     elif text == "Назад":
         await message.answer("Головне меню адміна:", reply_markup=get_admin_root_menu())
         await AdminMenuStates.choosing_section.set()
     else:
-        await message.answer("Оберіть дію: «Підтверджені», «Видалені», або «Назад».")
+        await message.answer("Оберіть дію: «Підтверджені», «Видалені», «Редагування заявок» або «Назад».")
 
 ############################################
 #  РЕДАГУВАННЯ ЗАЯВОК
